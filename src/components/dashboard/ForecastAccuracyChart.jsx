@@ -39,28 +39,29 @@ export default function ForecastAccuracyChart({ data, onExport }) {
 
   return (
     <Card className="glass-effect">
-      <CardHeader className="flex flex-row items-center justify-between pb-2">
+      <CardHeader className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0 pb-2">
         <div>
-          <CardTitle className="text-lg font-semibold text-slate-900">
+          <CardTitle className="text-base sm:text-lg font-semibold text-slate-900">
             Forecast Accuracy & Sales Performance
           </CardTitle>
-          <p className="text-sm text-slate-500 mt-1">
+          <p className="text-xs sm:text-sm text-slate-500 mt-1">
             Compare predicted vs actual sales to improve forecasting
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <Badge variant={averageAccuracy >= 85 ? "default" : "secondary"} className="flex items-center gap-1">
+        <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
+          <Badge variant={averageAccuracy >= 85 ? "default" : "secondary"} className="flex items-center gap-1 text-xs">
             {trend >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-            {averageAccuracy}% Avg Accuracy
+            <span className="hidden sm:inline">{averageAccuracy}% Avg Accuracy</span>
+            <span className="sm:hidden">{averageAccuracy}%</span>
           </Badge>
-          <Button variant="outline" size="sm" onClick={() => onExport('forecast_accuracy')}>
-            <Download className="w-4 h-4 mr-2" />
+          <Button variant="outline" size="sm" onClick={() => onExport('forecast_accuracy')} className="text-xs flex-1 sm:flex-none">
+            <Download className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
             Export
           </Button>
         </div>
       </CardHeader>
       <CardContent className="pt-4">
-        <div className="h-80">
+        <div className="h-64 sm:h-80">
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={data}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
@@ -113,22 +114,22 @@ export default function ForecastAccuracyChart({ data, onExport }) {
           </ResponsiveContainer>
         </div>
         
-        <div className="mt-4 grid grid-cols-3 gap-4 text-xs border-t pt-4">
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 text-xs border-t pt-3 sm:pt-4">
           <div>
-            <p className="text-slate-500">Average Accuracy</p>
-            <p className="font-semibold text-lg text-slate-900">
+            <p className="text-slate-500 text-xs">Average Accuracy</p>
+            <p className="font-semibold text-base sm:text-lg text-slate-900">
               {averageAccuracy}%
             </p>
           </div>
           <div>
-            <p className="text-slate-500">Total Actual Sales</p>
-            <p className="font-semibold text-lg text-green-600">
+            <p className="text-slate-500 text-xs">Total Actual Sales</p>
+            <p className="font-semibold text-base sm:text-lg text-green-600">
               {data.reduce((sum, d) => sum + d.actual, 0).toLocaleString()} cases
             </p>
           </div>
           <div>
-            <p className="text-slate-500">Accuracy Trend</p>
-            <p className={`font-semibold text-lg ${trend >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            <p className="text-slate-500 text-xs">Accuracy Trend</p>
+            <p className={`font-semibold text-base sm:text-lg ${trend >= 0 ? 'text-green-600' : 'text-red-600'}`}>
               {trend >= 0 ? '+' : ''}{trend.toFixed(1)}%
             </p>
           </div>

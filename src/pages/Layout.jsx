@@ -38,30 +38,31 @@ export default function Layout({ children, currentPageName }) {
 
       {/* Executive Header */}
       <header className="executive-gradient text-white shadow-2xl sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 sm:py-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             {/* Logo & Brand */}
-            <Link to={createPageUrl('Dashboard')} className="flex items-center gap-4">
-              <div className="gold-accent p-2 rounded-lg">
-                <BarChart3 className="w-6 h-6 text-white" />
+            <Link to={createPageUrl('Dashboard')} className="flex items-center gap-2 sm:gap-4">
+              <div className="gold-accent p-1.5 sm:p-2 rounded-lg">
+                <BarChart3 className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
               </div>
               <div>
-                <h1 className="text-xl font-bold">Jules Taylor Wines</h1>
-                <p className="text-sm text-slate-300">Executive Dashboard</p>
+                <h1 className="text-lg sm:text-xl font-bold">Jules Taylor Wines</h1>
+                <p className="text-xs sm:text-sm text-slate-300">Executive Dashboard</p>
               </div>
             </Link>
 
             {/* Last Updated & Actions */}
-            <div className="flex items-center gap-6">
-              <Link to={createPageUrl('UploadData')}>
-                <Button variant="outline" className="text-white border-white/20 bg-white/10 hover:bg-white/20 hover:text-white gap-2">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-6 w-full sm:w-auto">
+              <Link to={createPageUrl('UploadData')} className="w-full sm:w-auto">
+                <Button variant="outline" className="w-full sm:w-auto text-white border-white/20 bg-white/10 hover:bg-white/20 hover:text-white gap-2 text-sm">
                   <Upload className="w-4 h-4" />
-                  Upload Data
+                  <span className="hidden sm:inline">Upload Data</span>
+                  <span className="sm:hidden">Upload</span>
                 </Button>
               </Link>
-              <div className="text-right">
+              <div className="text-left sm:text-right">
                 <p className="text-xs text-slate-300">Last updated</p>
-                <p className="text-sm font-medium">{new Date().toLocaleString()}</p>
+                <p className="text-xs sm:text-sm font-medium">{new Date().toLocaleString()}</p>
               </div>
             </div>
           </div>

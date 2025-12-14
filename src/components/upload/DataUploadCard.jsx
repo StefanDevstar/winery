@@ -85,7 +85,7 @@ export default function DataUploadCard({
       default:
         return (
           <div
-            className={`p-8 border-2 border-dashed rounded-lg transition-all ${
+            className={`p-4 sm:p-8 border-2 border-dashed rounded-lg transition-all ${
               dragActive 
                 ? "border-blue-400 bg-blue-50 scale-105" 
                 : "border-gray-300 hover:border-gray-400"
@@ -103,18 +103,18 @@ export default function DataUploadCard({
               className="hidden"
             />
             <div className="text-center">
-              <Upload className="w-10 h-10 mx-auto text-slate-400 mb-3" />
-              <p className="text-sm text-slate-600 mb-1 font-medium">
+              <Upload className="w-8 h-8 sm:w-10 sm:h-10 mx-auto text-slate-400 mb-2 sm:mb-3" />
+              <p className="text-xs sm:text-sm text-slate-600 mb-1 font-medium">
                 {acceptFileTypes.includes('.xlsx') ? 'Drop Excel or CSV file here' : 'Drop CSV file here'}
               </p>
-              <p className="text-xs text-slate-400 mb-3">
+              <p className="text-xs text-slate-400 mb-2 sm:mb-3">
                 or
               </p>
               <Button 
                 type="button" 
                 variant="outline" 
                 onClick={() => fileInputRef.current?.click()}
-                className="text-sm"
+                className="text-xs sm:text-sm w-full sm:w-auto"
               >
                 Browse File
               </Button>
@@ -130,21 +130,21 @@ export default function DataUploadCard({
     }`}>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className={`p-2 rounded-lg ${
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className={`p-1.5 sm:p-2 rounded-lg shrink-0 ${
               processingStatus.status === 'success' 
                 ? 'bg-green-500' 
                 : 'gold-accent'
             }`}>
               {processingStatus.status === 'success' ? (
-                <CheckCircle className="w-5 h-5 text-white" />
+                <CheckCircle className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
               ) : (
-                <Icon className="w-5 h-5 text-white" />
+                <Icon className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
               )}
             </div>
-            <div>
-              <CardTitle className="text-base font-semibold">{title}</CardTitle>
-              <p className="text-xs text-slate-500">{description}</p>
+            <div className="min-w-0">
+              <CardTitle className="text-sm sm:text-base font-semibold">{title}</CardTitle>
+              <p className="text-xs text-slate-500 line-clamp-2">{description}</p>
             </div>
           </div>
         </div>

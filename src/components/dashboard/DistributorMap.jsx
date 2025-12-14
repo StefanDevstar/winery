@@ -24,8 +24,8 @@ export default function DistributorMap({ distributors = [] }) {
       </CardHeader>
       <CardContent>
         {/* Simplified world view with distributor cards */}
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-3 sm:space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
             {distributors.map((distributor, index) => {
               const status = distributor?.stock_status || 'healthy';
               const name = distributor?.name || distributor?.id || 'Unknown Distributor';
@@ -36,21 +36,21 @@ export default function DistributorMap({ distributors = [] }) {
               return (
                 <div 
                   key={index}
-                  className={`border rounded-lg p-4 ${statusColors[status]}`}
+                  className={`border rounded-lg p-3 sm:p-4 ${statusColors[status]}`}
                 >
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <MapPin className="w-4 h-4" />
-                      <h3 className="font-medium">{name}</h3>
+                  <div className="flex items-center justify-between mb-2 gap-2">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <MapPin className="w-4 h-4 shrink-0" />
+                      <h3 className="font-medium text-sm sm:text-base truncate">{name}</h3>
                     </div>
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 shrink-0">
                       {statusIcons[status]}
                       <span className="text-xs font-medium">
                         {String(status).toUpperCase()}
                       </span>
                     </div>
                   </div>
-                  <div className="text-sm space-y-1">
+                  <div className="text-xs sm:text-sm space-y-1">
                     <div className="flex justify-between">
                       <span>Stock:</span>
                       <span className="font-medium">{currentStock.toLocaleString()} cases</span>

@@ -145,32 +145,33 @@ export default function FilterBar({ filters, onFilterChange }) {
   };
 
   return (
-    <div className="glass-effect rounded-lg p-4 mb-6 space-y-4">
+    <div className="glass-effect rounded-lg p-3 sm:p-4 mb-4 sm:mb-6 space-y-3 sm:space-y-4">
       {/* View Mode Selector */}
-      <div className="flex items-center justify-between border-b pb-4">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0 border-b pb-3 sm:pb-4">
         <div className="flex items-center gap-2 text-slate-600">
           <Filter className="w-4 h-4" />
           <span className="text-sm font-medium">View:</span>
         </div>
         
-        <Tabs value={viewMode} onValueChange={handleViewModeChange}>
-          <TabsList className="bg-slate-100">
-            <TabsTrigger value="historical">Historical Data</TabsTrigger>
-            <TabsTrigger value="forward">
-              <TrendingUp className="w-3 h-3 mr-2" />
-              Forward Predictions
+        <Tabs value={viewMode} onValueChange={handleViewModeChange} className="w-full sm:w-auto">
+          <TabsList className="bg-slate-100 w-full sm:w-auto">
+            <TabsTrigger value="historical" className="flex-1 sm:flex-none text-xs sm:text-sm">Historical Data</TabsTrigger>
+            <TabsTrigger value="forward" className="flex-1 sm:flex-none text-xs sm:text-sm">
+              <TrendingUp className="w-3 h-3 mr-1 sm:mr-2" />
+              <span className="hidden sm:inline">Forward Predictions</span>
+              <span className="sm:hidden">Forward</span>
             </TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
 
       {/* Primary Filters */}
-      <div className="flex items-center gap-4 flex-wrap">
-        <div className="flex gap-3">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4">
+        <div className="grid grid-cols-2 sm:flex gap-2 sm:gap-3">
           <Select value={filters.country || "nzl"} onValueChange={(value) => {
             onFilterChange('country', value);
           }}>
-            <SelectTrigger className="w-40">
+            <SelectTrigger className="w-full sm:w-40 text-sm">
               <SelectValue placeholder="Country" />
             </SelectTrigger>
             <SelectContent>
@@ -184,7 +185,7 @@ export default function FilterBar({ filters, onFilterChange }) {
           </Select>
 
           <Select value={filters.distributor} onValueChange={(value) => onFilterChange('distributor', value)}>
-            <SelectTrigger className="w-48">
+            <SelectTrigger className="w-full sm:w-48 text-sm">
               <SelectValue placeholder={filters.country === "usa" ? "State" : "Distributor"} />
             </SelectTrigger>
             <SelectContent>
@@ -200,7 +201,7 @@ export default function FilterBar({ filters, onFilterChange }) {
           </Select>
 
           <Select value={filters.wineType} onValueChange={(value) => onFilterChange('wineType', value)}>
-            <SelectTrigger className="w-48">
+            <SelectTrigger className="w-full sm:w-48 text-sm">
               <SelectValue placeholder="Wine Type" />
             </SelectTrigger>
             <SelectContent>
@@ -225,7 +226,7 @@ export default function FilterBar({ filters, onFilterChange }) {
           </Select>
 
           <Select value={filters.year || "all"} onValueChange={(value) => onFilterChange('year', value)}>
-            <SelectTrigger className="w-32">
+            <SelectTrigger className="w-full sm:w-32 text-sm">
               <SelectValue placeholder="Year" />
             </SelectTrigger>
             <SelectContent>
@@ -244,79 +245,84 @@ export default function FilterBar({ filters, onFilterChange }) {
       </div>
 
       {/* Date/Prediction Range Filters */}
-      <div className="border-t pt-4">
+      <div className="border-t pt-3 sm:pt-4">
         {viewMode === "historical" ? (
-          <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4">
             <div className="flex items-center gap-2 text-slate-600">
               <CalendarIcon className="w-4 h-4" />
-              <span className="text-sm font-medium">Historical Period:</span>
+              <span className="text-xs sm:text-sm font-medium">Historical Period:</span>
             </div>
             
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" className="text-xs">
-                  <CalendarIcon className="mr-2 h-3 w-3" />
-                  {dateRange?.from ? (
-                    dateRange.to ? (
-                      <>
-                        {format(dateRange.from, "LLL dd, y")} -{" "}
-                        {format(dateRange.to, "LLL dd, y")}
-                      </>
+            <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="text-xs w-full sm:w-auto justify-start">
+                    <CalendarIcon className="mr-2 h-3 w-3" />
+                    {dateRange?.from ? (
+                      dateRange.to ? (
+                        <>
+                          <span className="hidden sm:inline">{format(dateRange.from, "LLL dd, y")} - {format(dateRange.to, "LLL dd, y")}</span>
+                          <span className="sm:hidden">{format(dateRange.from, "MMM dd")} - {format(dateRange.to, "MMM dd")}</span>
+                        </>
+                      ) : (
+                        format(dateRange.from, "LLL dd, y")
+                      )
                     ) : (
-                      format(dateRange.from, "LLL dd, y")
-                    )
-                  ) : (
-                    "Select Date Range"
-                  )}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-0" align="start">
-                <Calendar
-                  initialFocus
-                  mode="range"
-                  defaultMonth={dateRange?.from}
-                  selected={dateRange}
-                  onSelect={handleDateRangeChange}
-                  numberOfMonths={2}
-                />
-              </PopoverContent>
-            </Popover>
+                      "Select Date Range"
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    initialFocus
+                    mode="range"
+                    defaultMonth={dateRange?.from}
+                    selected={dateRange}
+                    onSelect={handleDateRangeChange}
+                    numberOfMonths={1}
+                    className="sm:block"
+                  />
+                </PopoverContent>
+              </Popover>
 
-            <div className="flex gap-2">
-              <Button 
-                variant="outline" 
-                size="sm" 
-                onClick={() => {
-                  const now = new Date();
-                  const from = new Date(now.getFullYear(), now.getMonth() - 12, 1);
-                  handleDateRangeChange({ from, to: now });
-                }}
-                className="text-xs"
-              >
-                Last 12 Months
-              </Button>
-              <Button 
-                variant="outline" 
-                size="sm" 
-                onClick={() => {
-                  const now = new Date();
-                  const from = new Date(now.getFullYear(), now.getMonth() - 6, 1);
-                  handleDateRangeChange({ from, to: now });
-                }}
-                className="text-xs"
-              >
-                Last 6 Months
-              </Button>
+              <div className="flex gap-2">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => {
+                    const now = new Date();
+                    const from = new Date(now.getFullYear(), now.getMonth() - 12, 1);
+                    handleDateRangeChange({ from, to: now });
+                  }}
+                  className="text-xs flex-1 sm:flex-none"
+                >
+                  <span className="hidden sm:inline">Last 12 Months</span>
+                  <span className="sm:hidden">12M</span>
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => {
+                    const now = new Date();
+                    const from = new Date(now.getFullYear(), now.getMonth() - 6, 1);
+                    handleDateRangeChange({ from, to: now });
+                  }}
+                  className="text-xs flex-1 sm:flex-none"
+                >
+                  <span className="hidden sm:inline">Last 6 Months</span>
+                  <span className="sm:hidden">6M</span>
+                </Button>
+              </div>
             </div>
           </div>
         ) : (
-          <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4">
             <div className="flex items-center gap-2 text-slate-600">
               <TrendingUp className="w-4 h-4" />
-              <span className="text-sm font-medium">Prediction Range:</span>
+              <span className="text-xs sm:text-sm font-medium">Prediction Range:</span>
             </div>
             
-            <div className="flex gap-2">
+            <div className="grid grid-cols-3 sm:flex gap-2">
               {[1, 2, 3, 6, 12].map(months => (
                 <Button
                   key={months}
@@ -325,7 +331,7 @@ export default function FilterBar({ filters, onFilterChange }) {
                   onClick={() => handleForwardLookingChange(months)}
                   className="text-xs"
                 >
-                  {months} {months === 1 ? 'Month' : 'Months'}
+                  {months} {months === 1 ? 'M' : 'M'}
                 </Button>
               ))}
             </div>

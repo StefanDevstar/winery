@@ -691,18 +691,19 @@ export default function Dashboard() {
   } = kpiValues;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-white p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-white p-3 sm:p-4 md:p-6">
+      <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6">
         {isProcessing && (
-          <div className="fixed top-4 right-4 bg-blue-500 text-white px-4 py-2 rounded-lg shadow-lg z-50 flex items-center gap-2">
+          <div className="fixed top-16 sm:top-4 right-2 sm:right-4 bg-blue-500 text-white px-3 sm:px-4 py-2 rounded-lg shadow-lg z-50 flex items-center gap-2 text-sm">
             <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-            <span>Processing data...</span>
+            <span className="hidden sm:inline">Processing data...</span>
+            <span className="sm:hidden">Processing...</span>
           </div>
         )}
         <FilterBar filters={filters} onFilterChange={handleFilterChange} />
 
         {/* KPI Tiles */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 md:gap-6">
           <KPITile
             title="Avg Stock Float"
             value={avgFloatNow}
@@ -738,8 +739,8 @@ export default function Dashboard() {
         </div>
 
         {/* Charts + Alerts */}
-        <div className="grid lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
+          <div className="lg:col-span-2 space-y-4 sm:space-y-6">
             <StockFloatChart
               data={stockFloatData}
               threshold={500}
@@ -748,7 +749,9 @@ export default function Dashboard() {
             />
             <ForecastAccuracyChart data={forecastAccuracyData} />
           </div>
-          <AlertsFeed alerts={alerts} />
+          <div className="lg:col-span-1">
+            <AlertsFeed alerts={alerts} />
+          </div>
         </div>
 
         <DistributorMap distributors={distributors} />

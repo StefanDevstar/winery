@@ -27,19 +27,19 @@ export default function AlertsFeed({ alerts, onAlertClick }) {
   });
 
   return (
-    <Card className="glass-effect h-fit sticky top-6">
-      <CardHeader className="pb-4">
+    <Card className="glass-effect h-fit lg:sticky lg:top-6">
+      <CardHeader className="pb-3 sm:pb-4">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg font-semibold text-slate-900">
+          <CardTitle className="text-base sm:text-lg font-semibold text-slate-900">
             Active Alerts
           </CardTitle>
-          <Badge variant="destructive">
+          <Badge variant="destructive" className="text-xs">
             {alerts.filter(a => a.severity === 'critical' || a.severity === 'high').length}
           </Badge>
         </div>
         <p className="text-xs text-slate-500">Stock float warnings and recommendations</p>
       </CardHeader>
-      <CardContent className="space-y-3 max-h-[600px] overflow-y-auto">
+      <CardContent className="space-y-2 sm:space-y-3 max-h-[400px] sm:max-h-[600px] overflow-y-auto">
         {sortedAlerts.length === 0 ? (
           <div className="text-center text-slate-500 py-8">
             <CheckCircle className="w-8 h-8 mx-auto mb-2 text-green-500" />
@@ -54,19 +54,19 @@ export default function AlertsFeed({ alerts, onAlertClick }) {
                 alert.severity === 'high' ? 'border-orange-500' :
                 alert.severity === 'medium' ? 'border-yellow-500' :
                 'border-blue-500'
-              } bg-white p-3 rounded-r-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer`}
+              } bg-white p-2 sm:p-3 rounded-r-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer`}
               onClick={() => onAlertClick && onAlertClick(alert)}
             >
-              <div className="flex items-start justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  {alertIcons[alert.type]}
-                  <h4 className="font-medium text-sm">{alert.title}</h4>
+              <div className="flex items-start justify-between mb-1 sm:mb-2 gap-2">
+                <div className="flex items-start gap-2 flex-1 min-w-0">
+                  <div className="mt-0.5">{alertIcons[alert.type]}</div>
+                  <h4 className="font-medium text-xs sm:text-sm break-words">{alert.title}</h4>
                 </div>
-                <Badge className={severityColors[alert.severity]}>
+                <Badge className={`${severityColors[alert.severity]} text-xs shrink-0`}>
                   {alert.severity}
                 </Badge>
               </div>
-              <p className="text-xs text-slate-600 mb-2">
+              <p className="text-xs text-slate-600 mb-1 sm:mb-2">
                 {alert.description}
               </p>
               <div className="space-y-1 text-xs text-slate-700">

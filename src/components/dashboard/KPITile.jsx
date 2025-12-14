@@ -29,31 +29,31 @@ export default function KPITile({
   return (
     <Card 
       className={`glass-effect border-l-4 ${statusColors[status]} cursor-pointer 
-                 hover:shadow-xl transition-all duration-300 hover:scale-[1.02] p-6`}
+                 hover:shadow-xl transition-all duration-300 hover:scale-[1.02] p-4 sm:p-6`}
       onClick={onClick}
     >
-      <div className="space-y-3">
+      <div className="space-y-2 sm:space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium text-slate-600 uppercase tracking-wider">
+          <h3 className="text-xs sm:text-sm font-medium text-slate-600 uppercase tracking-wider">
             {title}
           </h3>
-          <div className={`flex items-center gap-1 text-sm ${trendColor}`}>
-            <TrendIcon className="w-4 h-4" />
+          <div className={`flex items-center gap-1 text-xs sm:text-sm ${trendColor}`}>
+            <TrendIcon className="w-3 h-3 sm:w-4 sm:h-4" />
             <span className="font-medium">{Math.abs(percentChange)}%</span>
           </div>
         </div>
         
-        <div className="flex items-baseline gap-2">
-          <span className="text-3xl font-bold text-slate-900">
+        <div className="flex items-baseline gap-1 sm:gap-2">
+          <span className="text-2xl sm:text-3xl font-bold text-slate-900">
             {value.toLocaleString()}
           </span>
-          <span className="text-lg text-slate-500 font-medium">
+          <span className="text-base sm:text-lg text-slate-500 font-medium">
             {unit}
           </span>
         </div>
         
         <div className="text-xs text-slate-500">
-          vs previous period: {previousValue?.toLocaleString() || 'N/A'} {unit}
+          vs previous: {previousValue?.toLocaleString() || 'N/A'} {unit}
         </div>
       </div>
     </Card>

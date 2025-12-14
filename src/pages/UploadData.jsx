@@ -255,26 +255,27 @@ export default function UploadDataPage() {
   const allUploadsComplete = Object.values(statuses).every(s => s.status === 'success');
 
   return (
-    <div className="p-6 bg-gradient-to-br from-slate-50 to-white min-h-[calc(100vh-80px)]">
+    <div className="p-3 sm:p-4 md:p-6 bg-gradient-to-br from-slate-50 to-white min-h-[calc(100vh-80px)]">
       <div className="max-w-6xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-4">
-            <Button asChild variant="outline" size="icon">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sm:gap-0 mb-6 sm:mb-8">
+          <div className="flex items-center gap-3 sm:gap-4">
+            <Button asChild variant="outline" size="icon" className="shrink-0">
               <Link to={createPageUrl('Dashboard')}>
                 <ChevronLeft className="w-4 h-4" />
               </Link>
             </Button>
             <div>
-              <h1 className="text-2xl font-bold text-slate-900">Import Data</h1>
-              <p className="text-slate-500">Upload CSV files from your data sources</p>
+              <h1 className="text-xl sm:text-2xl font-bold text-slate-900">Import Data</h1>
+              <p className="text-xs sm:text-sm text-slate-500">Upload CSV files from your data sources</p>
             </div>
           </div>
 
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="outline" className="gap-2">
+              <Button variant="outline" className="gap-2 w-full sm:w-auto text-sm">
                 <RefreshCw className="w-4 h-4" />
-                Refresh & Clear All
+                <span className="hidden sm:inline">Refresh & Clear All</span>
+                <span className="sm:hidden">Clear All</span>
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent>
@@ -326,7 +327,7 @@ export default function UploadDataPage() {
           </Alert>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
           <DataUploadCard
             title="iDig Sales Data"
             description="Monthly sales data from iDig platform"
@@ -364,12 +365,12 @@ export default function UploadDataPage() {
           />
         </div>
 
-        <div className="mt-8 p-6 bg-blue-50 border border-blue-200 rounded-lg text-blue-800">
-          <h3 className="font-semibold mb-3 flex items-center gap-2">
-            <FileText className="w-5 h-5" />
+        <div className="mt-6 sm:mt-8 p-4 sm:p-6 bg-blue-50 border border-blue-200 rounded-lg text-blue-800">
+          <h3 className="font-semibold mb-3 flex items-center gap-2 text-sm sm:text-base">
+            <FileText className="w-4 h-4 sm:w-5 sm:h-5" />
             Upload Instructions
           </h3>
-          <ul className="list-disc list-inside text-sm space-y-2">
+          <ul className="list-disc list-inside text-xs sm:text-sm space-y-2">
             <li><strong>iDig Sales Data:</strong> Monthly sales figures from iDig distributor platform (Excel .xlsx or CSV)</li>
             <li><strong>All Export Running Record:</strong> Historical export transactions and shipments (Excel .xlsx or CSV)</li>
             <li><strong>Stock on Hand Live Report:</strong> Current warehouse inventory from CIN7 (Excel .xlsx or CSV)</li>
