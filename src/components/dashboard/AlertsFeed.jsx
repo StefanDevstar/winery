@@ -1,0 +1,111 @@
+import React from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { AlertTriangle, Clock, TrendingDown, Truck, CheckCircle, Package } from "lucide-react";
+import { format } from "date-fns";
+
+export default function AlertsFeed({ alerts, onAlertClick }) {
+  const alertIcons = {
+    stockout: <AlertTriangle className="w-4 h-4" />,
+    low_stock_float: <Package className="w-4 h-4" />,
+    shipment_delay: <Truck className="w-4 h-4" />,
+    forecast_variance: <TrendingDown className="w-4 h-4" />,
+    quality: <Clock className="w-4 h-4" />
+  };
+
+  const severityColors = {
+    low: "bg-blue-100 text-blue-800",
+    medium: "bg-yellow-100 text-yellow-800", 
+    high: "bg-orange-100 text-orange-800",
+    critical: "bg-red-100 text-red-800"
+  };
+
+  const sortedAlerts = [...alerts].sort((a, b) => {
+    const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+    return severityOrder[a.severity] - severityOrder[b.severity];
+  });
+
+  return (
+    <Card className="glass-effect h-fit sticky top-6">
+      <CardHeader className="pb-4">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-lg font-semibold text-slate-900">
+            Active Alerts
+          </CardTitle>
+          <Badge variant="destructive">
+            {alerts.filter(a => a.severity === 'critical' || a.severity === 'high').length}
+          </Badge>
+        </div>
+        <p className="text-xs text-slate-500">Stock float warnings and recommendations</p>
+      </CardHeader>
+      <CardContent className="space-y-3 max-h-[600px] overflow-y-auto">
+        {sortedAlerts.length === 0 ? (
+          <div className="text-center text-slate-500 py-8">
+            <CheckCircle className="w-8 h-8 mx-auto mb-2 text-green-500" />
+            <p className="text-sm">All stock levels healthy</p>
+          </div>
+        ) : (
+          sortedAlerts.map((alert, index) => (
+            <div 
+              key={index} 
+              className={`border-l-4 ${
+                alert.severity === 'critical' ? 'border-red-500' :
+                alert.severity === 'high' ? 'border-orange-500' :
+                alert.severity === 'medium' ? 'border-yellow-500' :
+                'border-blue-500'
+              } bg-white p-3 rounded-r-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer`}
+              onClick={() => onAlertClick && onAlertClick(alert)}
+            >
+              <div className="flex items-start justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  {alertIcons[alert.type]}
+                  <h4 className="font-medium text-sm">{alert.title}</h4>
+                </div>
+                <Badge className={severityColors[alert.severity]}>
+                  {alert.severity}
+                </Badge>
+              </div>
+              <p className="text-xs text-slate-600 mb-2">
+                {alert.description}
+              </p>
+              <div className="space-y-1 text-xs text-slate-700">
+                {alert.wine_type && (
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium">Wine:</span>
+                    <span className="text-slate-600">{alert.wine_type}</span>
+                  </div>
+                )}
+                {alert.distributor && (
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium">Distributor:</span>
+                    <span className="text-slate-600">{alert.distributor}</span>
+                  </div>
+                )}
+                {alert.current_stock_float !== undefined && (
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium">Current Float:</span>
+                    <span className="text-red-600 font-semibold">{alert.current_stock_float} cases</span>
+                    <span className="text-slate-500">(threshold: {alert.threshold})</span>
+                  </div>
+                )}
+                {alert.recommended_order_quantity && (
+                  <div className="mt-2 pt-2 border-t">
+                    <span className="font-medium text-green-600">Recommended Order: {alert.recommended_order_quantity} cases</span>
+                  </div>
+                )}
+              </div>
+              {alert.predicted_stockout_date && (
+                <div className="mt-2 pt-2 border-t text-xs">
+                  <span className="text-red-600 font-medium">
+                    Predicted stockout: {format(new Date(alert.predicted_stockout_date), 'MMM d, yyyy')}
+                  </span>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
