@@ -39,9 +39,9 @@ function PagesContent() {
                     <Route path="/" element={<Dashboard />} />
                 
                 
-                <Route path="/Dashboard" element={<Dashboard />} />
+                <Route path="/dashboard" element={<Dashboard />} />
                 
-                <Route path="/UploadData" element={<UploadData />} />
+                <Route path="/uploaddata" element={<UploadData />} />
                 
             </Routes>
         </Layout>
