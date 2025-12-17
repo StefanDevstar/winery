@@ -356,7 +356,7 @@ export default function UploadDataPage() {
           />
 
           <DataUploadCard
-            title="Distributor Stock Reports"
+            title="Depletion Summary"
             description="Stock levels at distributor locations"
             Icon={Users}
             onFileUpload={(file) => handleFileUpload(file, 'distributor_stock')}
