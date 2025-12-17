@@ -32,7 +32,7 @@ import {
 
 export default function UploadDataPage() {
   const [statuses, setStatuses] = useState({
-    idig: { status: 'idle', message: '', progress: 0 },
+    sales: { status: 'idle', message: '', progress: 0 },
     exports: { status: 'idle', message: '', progress: 0 },
     stock_on_hand: { status: 'idle', message: '', progress: 0 },
     distributor_stock: { status: 'idle', message: '', progress: 0 }
@@ -57,7 +57,6 @@ export default function UploadDataPage() {
     // Accept Excel files for: distributor_stock, exports, stock_on_hand, sales (idig)
     // Accept CSV files for: exports, sales (idig), cin7
     const excelTypes = ['distributor_stock', 'exports', 'stock_on_hand', 'sales'];
-    const csvTypes = ['exports', 'sales', 'cin7'];
     
     if (excelTypes.includes(type)) {
       if (!isExcel && !isCsv) {
@@ -240,7 +239,7 @@ export default function UploadDataPage() {
 
       // Reset all statuses
       setStatuses({
-        idig: { status: 'idle', message: '', progress: 0 },
+        sales: { status: 'idle', message: '', progress: 0 },
         exports: { status: 'idle', message: '', progress: 0 },
         stock_on_hand: { status: 'idle', message: '', progress: 0 },
         distributor_stock: { status: 'idle', message: '', progress: 0 }
@@ -333,7 +332,7 @@ export default function UploadDataPage() {
             description="Monthly sales data from iDig platform"
             Icon={TrendingUp}
             onFileUpload={(file) => handleFileUpload(file, 'sales')}
-            processingStatus={statuses.idig}
+            processingStatus={statuses.sales}
             acceptFileTypes=".xlsx,.xls,.csv"
           />
 
