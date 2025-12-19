@@ -29,7 +29,6 @@ export default function FilterBar({ filters, onFilterChange }) {
       }
 
       const countryFilter = filters.country === "all" ? null : filters.country.toLowerCase();
-      const isUSA = countryFilter === "usa";
 
       // Filter data by country if a country is selected
       const countryFilteredData = countryFilter
@@ -41,13 +40,22 @@ export default function FilterBar({ filters, onFilterChange }) {
 
       // Extract unique distributors/states
       const locationSet = new Set();
-      const wineTypeSet = new Set();
       const wineTypeMap = new Map(); // Map to store wine code -> display name
+      const wineNameToCodeMap = new Map(); // Reverse map: wine name -> code (to prevent duplicates by name)
 
       countryFilteredData.forEach(r => {
-        const location = (r.Location || "").trim();
+        let location = (r.Location || "").trim();
         if (location && location !== "Unknown") {
-          locationSet.add(location);
+          // Strip country code prefix for cleaner display
+          // Handles both "NZL - Wineworks" and "NZL GROCERY" formats
+          // First try removing "NZL -" format (with dash)
+          let cleanedLocation = location.replace(/^[A-Z]{2,3}\s*-\s*/i, "").trim();
+          // If that didn't work, try removing "NZL " format (with space, no dash)
+          if (!cleanedLocation || cleanedLocation === location) {
+            cleanedLocation = location.replace(/^[A-Z]{2,3}\s+/i, "").trim();
+          }
+          // Use cleaned version, fallback to original if cleaning results in empty
+          locationSet.add(cleanedLocation || location);
         }
 
         // Extract wine type from multiple possible fields
@@ -55,70 +63,99 @@ export default function FilterBar({ filters, onFilterChange }) {
         const productName = (r.ProductName || "").trim();
         const variety = (r.Variety || "").trim();
         
+        // Map codes to display names
+        const wineNameMap = {
+          'SAB': 'Sauvignon Blanc',
+          'PIN': 'Pinot Noir',
+          'CHR': 'Chardonnay',
+          'ROSE': 'Rose',
+          'PIG': 'Pinot Gris',
+          'GRU': 'Gruner Veltliner',
+          'LHS': 'Late Harvest Sauvignon',
+          'RIESLING': 'Riesling'
+        };
+        
         // Try to extract wine type code (e.g., SAB, PIN, CHR, etc.)
         if (wineCode) {
           // Extract variety code from wine code (format: BRAND_VARIETY_YEAR or similar)
           const parts = wineCode.split('_');
-          const varietyCode = parts.find(p => 
-            ['SAB', 'PIN', 'CHR', 'ROSE', 'PIG', 'GRU', 'LHS', 'RIESLING', 'CHARDONNAY'].includes(p.toUpperCase())
-          );
+          const varietyCode = parts.find(p => {
+            const upper = p.toUpperCase();
+            return ['SAB', 'PIN', 'CHR', 'ROSE', 'PIG', 'GRU', 'LHS', 'RIESLING', 'CHARDONNAY'].includes(upper);
+          });
           
           if (varietyCode) {
             const code = varietyCode.toUpperCase();
-            // Map codes to display names
-            const wineNameMap = {
-              'SAB': 'Sauvignon Blanc',
-              'PIN': 'Pinot Noir',
-              'CHR': 'Chardonnay',
-              'ROSE': 'Rose',
-              'PIG': 'Pinot Gris',
-              'GRU': 'Gruner Veltliner',
-              'LHS': 'Late Harvest Sauvignon',
-              'RIESLING': 'Riesling',
-              'CHARDONNAY': 'Chardonnay'
-            };
-            wineTypeMap.set(code, wineNameMap[code] || code);
+            // Normalize codes - map CHARDONNAY to CHR to avoid duplicates
+            const normalizedCode = code === 'CHARDONNAY' ? 'CHR' : code;
+            const wineName = wineNameMap[normalizedCode] || code;
+            
+            // Only add if we don't already have this wine name, or if this code is shorter
+            if (!wineNameToCodeMap.has(wineName)) {
+              wineNameToCodeMap.set(wineName, normalizedCode);
+              wineTypeMap.set(normalizedCode, wineName);
+            } else {
+              // If we already have this wine name, only update if this code is shorter
+              const existingCode = wineNameToCodeMap.get(wineName);
+              if (normalizedCode.length < existingCode.length) {
+                wineTypeMap.delete(existingCode);
+                wineNameToCodeMap.set(wineName, normalizedCode);
+                wineTypeMap.set(normalizedCode, wineName);
+              }
+            }
           }
         }
         
-        // Also check product name and variety fields
+        // Also check product name and variety fields - but only if we haven't found this wine type yet
+        const checkAndAddWineType = (code, name) => {
+          if (!wineNameToCodeMap.has(name)) {
+            wineNameToCodeMap.set(name, code);
+            wineTypeMap.set(code, name);
+          }
+        };
+        
         if (productName) {
           const lowerName = productName.toLowerCase();
           if (lowerName.includes('sauvignon blanc') || lowerName.includes('sauvignon')) {
-            wineTypeMap.set('SAB', 'Sauvignon Blanc');
+            checkAndAddWineType('SAB', 'Sauvignon Blanc');
           } else if (lowerName.includes('pinot noir')) {
-            wineTypeMap.set('PIN', 'Pinot Noir');
+            checkAndAddWineType('PIN', 'Pinot Noir');
           } else if (lowerName.includes('chardonnay')) {
-            wineTypeMap.set('CHR', 'Chardonnay');
+            checkAndAddWineType('CHR', 'Chardonnay');
           } else if (lowerName.includes('pinot gris') || lowerName.includes('pinot grigio')) {
-            wineTypeMap.set('PIG', 'Pinot Gris');
+            checkAndAddWineType('PIG', 'Pinot Gris');
           } else if (lowerName.includes('riesling')) {
-            wineTypeMap.set('RIESLING', 'Riesling');
+            checkAndAddWineType('RIESLING', 'Riesling');
           } else if (lowerName.includes('rose')) {
-            wineTypeMap.set('ROSE', 'Rose');
+            checkAndAddWineType('ROSE', 'Rose');
           }
         }
         
         if (variety) {
           const lowerVariety = variety.toLowerCase();
           if (lowerVariety.includes('sauvignon blanc') || lowerVariety.includes('sauvignon')) {
-            wineTypeMap.set('SAB', 'Sauvignon Blanc');
+            checkAndAddWineType('SAB', 'Sauvignon Blanc');
           } else if (lowerVariety.includes('pinot noir')) {
-            wineTypeMap.set('PIN', 'Pinot Noir');
+            checkAndAddWineType('PIN', 'Pinot Noir');
           } else if (lowerVariety.includes('chardonnay')) {
-            wineTypeMap.set('CHR', 'Chardonnay');
+            checkAndAddWineType('CHR', 'Chardonnay');
           } else if (lowerVariety.includes('pinot gris') || lowerVariety.includes('pinot grigio')) {
-            wineTypeMap.set('PIG', 'Pinot Gris');
+            checkAndAddWineType('PIG', 'Pinot Gris');
           } else if (lowerVariety.includes('riesling')) {
-            wineTypeMap.set('RIESLING', 'Riesling');
+            checkAndAddWineType('RIESLING', 'Riesling');
           } else if (lowerVariety.includes('rose')) {
-            wineTypeMap.set('ROSE', 'Rose');
+            checkAndAddWineType('ROSE', 'Rose');
           }
         }
       });
 
       // Convert sets to sorted arrays
-      const distributors = Array.from(locationSet).sort();
+      // Distributors are already cleaned (country code prefix removed)
+      const distributors = Array.from(locationSet)
+        .filter(loc => loc && loc !== "Unknown")
+        .sort();
+      
+      // Convert wine type map to array - duplicates already prevented by wineNameToCodeMap
       const wineTypes = Array.from(wineTypeMap.entries())
         .map(([code, name]) => ({ code: code.toLowerCase(), name }))
         .sort((a, b) => a.name.localeCompare(b.name));
@@ -207,8 +244,8 @@ export default function FilterBar({ filters, onFilterChange }) {
             <SelectContent>
               <SelectItem value="all">All Wine Types</SelectItem>
               {filterOptions.wineTypes.length > 0 ? (
-                filterOptions.wineTypes.map((wine) => (
-                  <SelectItem key={wine.code} value={wine.code}>
+                filterOptions.wineTypes.map((wine, index) => (
+                  <SelectItem key={`${wine.code}-${index}`} value={wine.code}>
                     {wine.name}
                   </SelectItem>
                 ))
