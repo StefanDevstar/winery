@@ -555,7 +555,7 @@ function parseNZLSheet(records) {
         AdditionalAttribute2: normalizeCountryCode(country), // Normalized country code (nzl)
         AdditionalAttribute3: `${brand}_${variety}`.toUpperCase().replace(/\s+/g, '_'), // Wine code
         ProductName: `${brand} ${variety}`.trim(), // Product name
-        Location: `${normalizeCountryCode(country)}_${channel}`.toUpperCase().replace(/\s+/g, '_'), // Location (Country_Channel)
+        Location: channel.toUpperCase().replace(/\s+/g, '_'), // Location (Channel only, no country prefix)
         Available: sales, // Sales quantity (depletion)
         _month: month,
         _year: year,
@@ -890,8 +890,8 @@ export function normalizeExportsData(records, sheetName = '') {
     const customerCol = findColumn(['Customer', 'Company', 'Distributor']);
     const casesCol = findColumn(['Cases', 'Quantity', 'Qty', 'Cartons', 'Units']);
     const statusCol = findColumn(['Status', 'Order Status', 'Shipment Status']);
-    const dateShippedCol = findColumn(['Date Shipped', 'Date Shipped', 'Shipped Date', 'Ship Date', 'Shipping Date']);
-    const dateArrivalCol = findColumn(['Date of Arrival', 'Date Arrival', 'Arrival Date', 'Arrived Date', 'Received Date']);
+    const dateShippedCol = findColumn(['Date Shipped', 'Shipped from WWM', 'Shipped Date', 'Ship Date', 'Shipping Date']);
+    const dateArrivalCol = findColumn(['Date of Arrival', 'Export Entry sent to WWM', 'Arrival Date', 'Arrived Date', 'Received Date']);
     const freightForwarderCol = findColumn(['Freight Forwarder', 'Freight', 'Forwarder', 'Carrier', 'Shipping Company']);
     
     // Process data rows
@@ -954,7 +954,7 @@ export function normalizeExportsData(records, sheetName = '') {
         FreightForwarder: freightForwarder,
         
         // For Dashboard compatibility
-        AdditionalAttribute2: skuParts.market, // Normalized country code
+        AdditionalAttribute2: "nzl", // Normalized country code
         AdditionalAttribute3: `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase().replace(/\s+/g, '_'),
         
         _sheetName: sheetName,

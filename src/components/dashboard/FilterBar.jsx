@@ -46,16 +46,17 @@ export default function FilterBar({ filters, onFilterChange }) {
       countryFilteredData.forEach(r => {
         let location = (r.Location || "").trim();
         if (location && location !== "Unknown") {
-          // Strip country code prefix for cleaner display
-          // Handles both "NZL - Wineworks" and "NZL GROCERY" formats
-          // First try removing "NZL -" format (with dash)
+          // Location no longer has country code prefix (removed at source), but keep fallback for other data sources
+          // Strip country code prefix if present (fallback for other data sources that might still have it)
           let cleanedLocation = location.replace(/^[A-Z]{2,3}\s*-\s*/i, "").trim();
-          // If that didn't work, try removing "NZL " format (with space, no dash)
           if (!cleanedLocation || cleanedLocation === location) {
             cleanedLocation = location.replace(/^[A-Z]{2,3}\s+/i, "").trim();
           }
-          // Use cleaned version, fallback to original if cleaning results in empty
-          locationSet.add(cleanedLocation || location);
+          // If still no change, use original location (no prefix was present)
+          if (!cleanedLocation || cleanedLocation === location) {
+            cleanedLocation = location;
+          }
+          locationSet.add(cleanedLocation);
         }
 
         // Extract wine type from multiple possible fields
