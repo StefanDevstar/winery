@@ -78,7 +78,7 @@ export default function Dashboard() {
     viewMode: "historical",
     forwardLookingMonths: 3,
     dateRange: {
-      from: new Date(new Date().getFullYear(), 0, 1),
+      from: new Date(new Date().getFullYear(), new Date().getMonth() - 12, 1),
       to: new Date(),
     },
   });
