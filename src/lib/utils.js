@@ -283,6 +283,84 @@ export function parseExcel(arrayBuffer) {
   }
 }
 
+// Company to country mapping for exports data
+const COMPANY_TO_COUNTRY_MAP = {
+  "Dreyfus": { "country": "usa", "iso2": "US" },
+  "Maverick Beverage Company Texas": { "country": "usa", "iso2": "US" },
+  "Boston wine Company": { "country": "usa", "iso2": "US" },
+  "Vehrs Distributing Company": { "country": "usa", "iso2": "US" },
+  "Breakthrough Beverage": { "country": "usa", "iso2": "US" },
+  "Western Wine Services": { "country": "usa", "iso2": "US" },
+  "Winebow Fine Wine": { "country": "usa", "iso2": "US" },
+  "Western Carriers": { "country": "usa", "iso2": "US" },
+  "Favourite Brands TX": { "country": "usa", "iso2": "US" },
+  "Landmark": { "country": "usa", "iso2": "US" },
+  "Coles Group Co Ltd": { "country": "au", "iso2": "AU" },
+  "The Bond": { "country": "au", "iso2": "AU" },
+  "Bacchus": { "country": "au", "iso2": "AU" },
+  "Colonial Trade Co Ltd": { "country": "jap", "iso2": "JP" },
+  "Degustation": { "country": "den", "iso2": "DK" },
+  "Wine Express": { "country": "pol", "iso2": "PL" },
+  "LCBO": { "country": "CA", "iso2": "CA" },
+  "The Battle Store General Trading": { "country": "AE", "iso2": "AE" },
+  "The Bottle Store": { "country": "AE", "iso2": "AE" },
+  "Centaurus": { "country": "AE", "iso2": "AE" },
+  "Curious Wines": { "country": "IE", "iso2": "IE" },
+  "Decorum": { "country": "GB", "iso2": "GB" },
+  "Quality Wine": { "country": "GB", "iso2": "GB" },
+  "Jean Arnaud": { "country": "NL", "iso2": "NL" },
+  "Sofresh": { "country": "GR", "iso2": "GR" },
+  "Napa Cellar": { "country": "KR", "iso2": "KR" },
+  "Avengere": { "country": "KR", "iso2": "KR" },
+  "Don Remi": { "country": "PH", "iso2": "PH" },
+  "Enoesa": { "country": "CL", "iso2": "CL" },
+  "Francisco Merte": { "country": "nzl", "iso2": "NZ" },
+  "PCL 201": { "country": "nzl", "iso2": "NZ" },
+  "Wine Bitters": { "country": "nzl", "iso2": "NZ" }
+};
+
+/**
+ * Gets country code from company name using the mapping
+ * @param {string} companyName - Company or customer name
+ * @returns {string} - Normalized country code (e.g., "usa", "au") or empty string
+ */
+function getCountryFromCompany(companyName) {
+  if (!companyName || typeof companyName !== 'string') return '';
+  
+  const normalizedCompany = companyName.trim();
+  // Exact match first
+  if (COMPANY_TO_COUNTRY_MAP[normalizedCompany]) {
+    return COMPANY_TO_COUNTRY_MAP[normalizedCompany].country;
+  }
+  
+  // Try case-insensitive exact match
+  for (const [key, value] of Object.entries(COMPANY_TO_COUNTRY_MAP)) {
+    if (key.toLowerCase() === normalizedCompany.toLowerCase()) {
+      return value.country;
+    }
+  }
+  
+  // Try partial match (company name contains key or key contains company name)
+  for (const [key, value] of Object.entries(COMPANY_TO_COUNTRY_MAP)) {
+    const keyLower = key.toLowerCase();
+    const companyLower = normalizedCompany.toLowerCase();
+    
+    // Check if company name contains the key (e.g., "Winebow NJ" contains "Winebow")
+    if (companyLower.includes(keyLower) || keyLower.includes(companyLower)) {
+      return value.country;
+    }
+    
+    // Also check for common variations (remove parenthetical content)
+    const keyBase = keyLower.split('(')[0].trim();
+    const companyBase = companyLower.split('(')[0].trim();
+    if (companyBase.includes(keyBase) || keyBase.includes(companyBase)) {
+      return value.country;
+    }
+  }
+  
+  return '';
+}
+
 /**
  * Normalizes country codes from various formats to match filter values.
  * Maps Excel country codes (US, USA, NZ, AU, etc.) to filter codes (usa, nzl, au, etc.)
@@ -876,24 +954,113 @@ export function normalizeExportsData(records, sheetName = '') {
     // Find column indices for key fields
     const findColumn = (searchTerms) => {
       for (const term of searchTerms) {
+        const termUpper = term.toUpperCase().trim();
+        if (!termUpper) continue;
+        
+        // First try to find by header value
         const key = headerKeys.find(k => {
-          const headerVal = String(headers[k] || k).toUpperCase();
-          return headerVal.includes(term.toUpperCase()) || term.toUpperCase().includes(headerVal);
+          const headerVal = String(headers[k] || k).toUpperCase().trim();
+          if (!headerVal) return false;
+          
+          // Priority 1: Exact match (most reliable)
+          if (headerVal === termUpper) return true;
+          
+          // Priority 2: Header contains the full search term (but be more strict)
+          // Only match if the term is substantial (at least 3 chars) and header contains it
+          if (termUpper.length >= 3 && headerVal.includes(termUpper)) {
+            // Additional check: ensure it's not a false match (e.g., "PO" matching "Export")
+            // If the term is a single word or short, require it to be a word boundary match
+            if (termUpper.length <= 5) {
+              // For short terms, require word boundary or exact match
+              const wordBoundaryRegex = new RegExp(`\\b${termUpper.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+              if (wordBoundaryRegex.test(headerVal)) return true;
+            } else {
+              // For longer terms, includes is usually safe
+              return true;
+            }
+          }
+          
+          // Priority 3: Search term contains header (less reliable, but needed for partial matches)
+          // Only if header is substantial and term contains it
+          if (headerVal.length >= 3 && termUpper.includes(headerVal)) {
+            return true;
+          }
+          
+          // Priority 4: Word-part matching (for multi-word terms)
+          // Split both by spaces/special chars and check if all significant parts match
+          const headerParts = headerVal.split(/[\s_\-\(\)]+/).filter(p => p.length > 0);
+          const termParts = termUpper.split(/[\s_\-\(\)]+/).filter(p => p.length > 0);
+          
+          // Only do word-part matching if both have multiple parts
+          if (termParts.length > 1 && headerParts.length > 0) {
+            // Check if all significant term parts (length >= 2) are found in header parts
+            const significantTermParts = termParts.filter(tp => tp.length >= 2);
+            if (significantTermParts.length > 0) {
+              const allPartsMatch = significantTermParts.every(tp => 
+                headerParts.some(hp => hp === tp || (hp.length >= 3 && hp.includes(tp)))
+              );
+              if (allPartsMatch) return true;
+            }
+          }
+          
+          return false;
         });
-        if (key !== undefined) return key;
+        
+        if (key !== undefined) {
+          // Return the key (which is the column identifier in the row object)
+          return key;
+        }
+        
+        // Also try to find by key name itself (in case the key IS the header text)
+        // But be more strict here too
+        const keyByName = headerKeys.find(k => {
+          const keyUpper = String(k || '').toUpperCase().trim();
+          if (!keyUpper) return false;
+          // Only exact match or if key contains the term (not the other way around for short terms)
+          if (keyUpper === termUpper) return true;
+          if (termUpper.length >= 5 && keyUpper.includes(termUpper)) return true;
+          return false;
+        });
+        if (keyByName !== undefined) return keyByName;
       }
       return null;
     };
     
     // Find all required columns
     const productDescCol = findColumn(['Product Description', 'Product Description (Stock)', 'Product Description (SKU)', 'Stock', 'Product', 'SKU', 'Item', 'Code']);
-    const customerCol = findColumn(['Customer', 'Company', 'Distributor']);
+    const customerCol = findColumn(['Company', 'Customer', 'Distributor']);
     const casesCol = findColumn(['Cases', 'Quantity', 'Qty', 'Cartons', 'Units']);
     const statusCol = findColumn(['Status', 'Order Status', 'Shipment Status']);
-    const dateShippedCol = findColumn(['Date Shipped', 'Shipped from WWM', 'Shipped Date', 'Ship Date', 'Shipping Date']);
-    const dateArrivalCol = findColumn(['Date of Arrival', 'Export Entry sent to WWM', 'Arrival Date', 'Arrived Date', 'Received Date']);
+    const dateShippedCol = findColumn(['Shipped from WWM', 'Date Shipped', 'Shipped Date', 'Shipped from', 'Shipped']);
+    const dateArrivalCol = findColumn([
+      'Export Entry sent to WWM',
+      'Export Entry',
+      'Date of Arrival', 
+      'Arrival Date', 
+      'Arrived Date', 
+      'Received Date', 
+      'Date Arrival',
+      'Export Entry sent',
+      'Entry sent to WWM',
+      'Entry sent',
+      'WWM Entry',
+      'Entry Sent to WWM'
+    ]);
     const freightForwarderCol = findColumn(['Freight Forwarder', 'Freight', 'Forwarder', 'Carrier', 'Shipping Company']);
-    
+    // Debug: Log found columns to help diagnose issues
+    if (headerRowIndex >= 0) {
+      console.log('Found columns:', {
+        productDesc: productDescCol,
+        customer: customerCol,
+        cases: casesCol,
+        status: statusCol,
+        dateShipped: dateShippedCol,
+        dateArrival: dateArrivalCol,
+        freightForwarder: freightForwarderCol,
+        headers: Object.keys(headers).map(k => ({ key: k, value: String(headers[k] || '') }))
+      });
+    }
+
     // Process data rows
     for (let i = headerRowIndex + 1; i < records.length; i++) {
       const row = records[i];
@@ -903,8 +1070,40 @@ export function normalizeExportsData(records, sheetName = '') {
       const customer = customerCol ? String(row[customerCol] || '').trim() : '';
       const cases = casesCol ? parseFloat(String(row[casesCol] || '0').replace(/,/g, '')) : 0;
       const status = statusCol ? String(row[statusCol] || '').trim().toLowerCase() : '';
-      const dateShipped = dateShippedCol ? String(row[dateShippedCol] || '').trim() : '';
-      const dateArrival = dateArrivalCol ? String(row[dateArrivalCol] || '').trim() : '';
+      
+      // Get date values - handle both key-based and value-based column access
+      let dateShipped = '';
+      if (dateShippedCol) {
+        // Try accessing by the key directly first
+        dateShipped = String(row[dateShippedCol] || '').trim();
+        // If empty, try accessing by header value (in case headers are used as keys)
+        if (!dateShipped && headers[dateShippedCol]) {
+          const headerVal = String(headers[dateShippedCol] || '').trim();
+          dateShipped = String(row[headerVal] || '').trim();
+        }
+      }
+      
+      let dateArrival = '';
+      if (dateArrivalCol) {
+        // Try accessing by the key directly first
+        dateArrival = String(row[dateArrivalCol] || '').trim();
+        // If empty, try accessing by header value (in case headers are used as keys)
+        if (!dateArrival && headers[dateArrivalCol]) {
+          const headerVal = String(headers[dateArrivalCol] || '').trim();
+          dateArrival = String(row[headerVal] || '').trim();
+        }
+        // Additional fallback: search for any column with matching header text
+        if (!dateArrival) {
+          for (const [key, val] of Object.entries(headers)) {
+            const headerText = String(val || '').toUpperCase().trim();
+            if (headerText.includes('EXPORT ENTRY') && headerText.includes('WWM')) {
+              dateArrival = String(row[key] || '').trim();
+              if (dateArrival) break;
+            }
+          }
+        }
+      }
+      
       const freightForwarder = freightForwarderCol ? String(row[freightForwarderCol] || '').trim() : '';
       
       if (!productDesc || cases <= 0) continue;
@@ -912,19 +1111,85 @@ export function normalizeExportsData(records, sheetName = '') {
       // Parse Product Description (SKU) - same format as stock on hand
       const skuParts = parseProductSKU(productDesc);
       
-      // Calculate shipping time in days if both dates are available
-      let shippingDays = null;
-      if (dateShipped && dateArrival) {
-        try {
-          const shippedDate = new Date(dateShipped);
-          const arrivalDate = new Date(dateArrival);
-          if (!isNaN(shippedDate.getTime()) && !isNaN(arrivalDate.getTime())) {
-            shippingDays = Math.ceil((arrivalDate - shippedDate) / (1000 * 60 * 60 * 24));
-          }
-        } catch (e) {
-          // Invalid date format, leave as null
+      // Helper function to parse dates from various Excel formats
+      const parseDate = (dateStr) => {
+        if (!dateStr || typeof dateStr !== 'string') return null;
+        
+        const cleaned = dateStr.trim();
+        if (!cleaned) return null;
+        
+        // Try standard Date parsing first
+        let date = new Date(cleaned);
+        if (!isNaN(date.getTime())) {
+          return date;
         }
+        
+        // Try parsing formats like "2/10/25", "2/10/2025", "10/2/25", "10/2/2025"
+        const parts = cleaned.split(/[\/\-]/);
+        if (parts.length >= 3) {
+          let month, day, year;
+          
+          // Determine format: US format (M/D/Y) vs ISO (Y-M-D)
+          if (parts[0].length === 4) {
+            // ISO format: YYYY-MM-DD
+            year = parseInt(parts[0]);
+            month = parseInt(parts[1]) - 1; // Month is 0-indexed
+            day = parseInt(parts[2]);
+          } else {
+            // US format: M/D/Y or D/M/Y (try both)
+            const first = parseInt(parts[0]);
+            const second = parseInt(parts[1]);
+            const third = parseInt(parts[2]);
+            
+            // If first part > 12, it's likely D/M/Y format
+            if (first > 12 && second <= 12) {
+              day = first;
+              month = second - 1;
+              year = third;
+            } else {
+              // Assume M/D/Y format
+              month = first - 1;
+              day = second;
+              year = third;
+            }
+            
+            // Handle 2-digit years
+            if (year < 100) {
+              year = year >= 50 ? 1900 + year : 2000 + year;
+            }
+          }
+          
+          date = new Date(year, month, day);
+          if (!isNaN(date.getTime())) {
+            return date;
+          }
+        }
+        
+        return null;
+      };
+      
+      // Parse dates
+      const shippedDate = dateShipped ? parseDate(dateShipped) : null;
+      const arrivalDate = dateArrival ? parseDate(dateArrival) : null;
+      
+      // Calculate shipping time in days
+      let shippingDays = null;
+      let daysInTransit = null;
+      
+      if (shippedDate && arrivalDate) {
+        // Both dates available: calculate total shipping days
+        shippingDays = Math.ceil((arrivalDate - shippedDate) / (1000 * 60 * 60 * 24));
+      } else if (shippedDate) {
+        // Only shipped date available: calculate days since shipped (currently in transit)
+        const now = new Date();
+        daysInTransit = Math.ceil((now - shippedDate) / (1000 * 60 * 60 * 24));
+        // Use daysInTransit as shippingDays for items currently in transit
+        shippingDays = daysInTransit;
       }
+      
+      // Get country code from company name using the mapping
+      // Fallback to "nzl" if no match found (default for exports from New Zealand)
+      const countryCode = getCountryFromCompany(customer) || "nzl";
       
       normalized.push({
         // Product information
@@ -951,10 +1216,11 @@ export function normalizeExportsData(records, sheetName = '') {
         DateShipped: dateShipped,
         DateArrival: dateArrival,
         ShippingDays: shippingDays,
+        DaysInTransit: daysInTransit, // Days since shipped (for items currently in transit)
         FreightForwarder: freightForwarder,
         
         // For Dashboard compatibility
-        AdditionalAttribute2: "nzl", // Normalized country code
+        AdditionalAttribute2: countryCode, // Normalized country code from company mapping
         AdditionalAttribute3: `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase().replace(/\s+/g, '_'),
         
         _sheetName: sheetName,

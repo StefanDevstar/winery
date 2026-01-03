@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useEffect } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -14,6 +14,21 @@ export default function FilterBar({ filters, onFilterChange }) {
   });
   
   const [viewMode, setViewMode] = React.useState("historical");
+  
+  // Update dateRange when year filter changes
+  useEffect(() => {
+    if (filters.year && filters.year !== "all") {
+      const selectedYear = parseInt(filters.year);
+      if (!isNaN(selectedYear)) {
+        const newDateRange = {
+          from: new Date(selectedYear, 0, 1), // January 1st
+          to: new Date(selectedYear, 11, 31) // December 31st
+        };
+        setDateRange(newDateRange);
+        onFilterChange('dateRange', newDateRange);
+      }
+    }
+  }, [filters.year]); // Only depend on filters.year
 
   // Extract available distributors/states and wine types based on selected country
   const filterOptions = useMemo(() => {

@@ -8,6 +8,67 @@ import DistributorMap from "../components/dashboard/DistributorMap";
 import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 
+/**
+ * Parses dates from various Excel formats (M/D/Y, D/M/Y, Y-M-D, etc.)
+ * @param {string} dateStr - Date string to parse
+ * @returns {Date|null} - Parsed date or null if invalid
+ */
+function parseDate(dateStr) {
+  if (!dateStr || typeof dateStr !== 'string') return null;
+  
+  const cleaned = dateStr.trim();
+  if (!cleaned) return null;
+  
+  // Try standard Date parsing first
+  let date = new Date(cleaned);
+  if (!isNaN(date.getTime())) {
+    return date;
+  }
+  
+  // Try parsing formats like "2/10/25", "2/10/2025", "10/2/25", "10/2/2025"
+  const parts = cleaned.split(/[\/\-]/);
+  if (parts.length >= 3) {
+    let month, day, year;
+    
+    // Determine format: US format (M/D/Y) vs ISO (Y-M-D)
+    if (parts[0].length === 4) {
+      // ISO format: YYYY-MM-DD
+      year = parseInt(parts[0]);
+      month = parseInt(parts[1]) - 1; // Month is 0-indexed
+      day = parseInt(parts[2]);
+    } else {
+      // US format: M/D/Y or D/M/Y (try both)
+      const first = parseInt(parts[0]);
+      const second = parseInt(parts[1]);
+      const third = parseInt(parts[2]);
+      
+      // If first part > 12, it's likely D/M/Y format
+      if (first > 12 && second <= 12) {
+        day = first;
+        month = second - 1;
+        year = third;
+      } else {
+        // Assume M/D/Y format
+        month = first - 1;
+        day = second;
+        year = third;
+      }
+      
+      // Handle 2-digit years
+      if (year < 100) {
+        year = year >= 50 ? 1900 + year : 2000 + year;
+      }
+    }
+    
+    date = new Date(year, month, day);
+    if (!isNaN(date.getTime())) {
+      return date;
+    }
+  }
+  
+  return null;
+}
+
 export default function Dashboard() {
   const [filters, setFilters] = useState({
     country: "usa",
@@ -85,7 +146,7 @@ export default function Dashboard() {
           const wineTypeFilter = filters.wineType === "all" ? null : filters.wineType.replace(/_/g, " ").toLowerCase();
           const wineTypeCode = filters.wineType === "all" ? null : filters.wineType.split("_")[0];
           const yearFilter = filters.year === "all" ? null : filters.year.toString();
-
+          console.log("yearFilter", yearFilter, "countryFilter", countryFilter, "distributorFilter", distributorFilter, "wineTypeFilter", wineTypeFilter, "wineTypeCode", wineTypeCode);
           // ───────── Filter Distributor Stock ─────────
           // Optimized filtering with early returns
           const filteredStock = [];
@@ -286,46 +347,121 @@ export default function Dashboard() {
           // Only include "waiting to ship" and "in transit" orders (exclude "complete")
           // Optimized filtering with early returns
           const filteredExports = [];
+          console.log(yearFilter, "yearFilter");
+          console.log(exportsData, "exportsData");
           for (let i = 0; i < exportsData.length; i++) {
             const r = exportsData[i];
             
             // Early exit for status check
+            // Check status field first
             const status = (r.Status || "").toLowerCase().trim();
-            const isActive = status === "waiting to ship" || 
-                            status === "in transit" || 
-                            status.includes("waiting") || 
-                            status.includes("transit");
-            if (!isActive) continue; // Exclude complete orders
+            let isActive = status === "waiting to ship" || 
+                          status === "in transit" || 
+                          status.includes("waiting") || 
+                          status.includes("transit");
+            
+            // Also check dates: if DateShipped exists but DateArrival is missing or in the future, it's in transit
+            if (!isActive) {
+              const dateShipped = (r.DateShipped || "").toString().trim();
+              const dateArrival = (r.DateArrival || "").toString().trim();
+              
+              if (dateShipped && !dateArrival) {
+                // Has shipped date but no arrival date = in transit
+                isActive = true;
+              } else if (dateShipped && dateArrival) {
+                // Both dates exist: check if arrival is in the future
+                const shippedDate = parseDate(dateShipped);
+                const arrivalDate = parseDate(dateArrival);
+                if (shippedDate && arrivalDate) {
+                  const now = new Date();
+                  // If arrival date is in the future, it's still in transit
+                  if (arrivalDate > now) {
+                    isActive = true;
+                  }
+                }
+              } else if (dateShipped) {
+                // Only shipped date: check if it's recent (likely in transit)
+                const shippedDate = parseDate(dateShipped);
+                if (shippedDate) {
+                  const now = new Date();
+                  const daysSinceShipped = Math.ceil((now - shippedDate) / (1000 * 60 * 60 * 24));
+                  // If shipped within last 90 days and no arrival date, likely in transit
+                  if (daysSinceShipped >= 0 && daysSinceShipped <= 90) {
+                    isActive = true;
+                  }
+                }
+              }
+            }
+            
+            // Exclude "complete" orders
+            if (status === "complete" || status.includes("complete")) {
+              isActive = false;
+            }
+            
+            if (!isActive) continue;
+            
             // Early exit for country filter
-            // Normalize market field to match filter format
+            // For exports data, country is now set in AdditionalAttribute2 during normalization
             if (countryFilter) {
-              const rawMarket = (r.Market || r.AdditionalAttribute2 || "").trim();
-              const normalizedMarket = normalizeCountryCode(rawMarket).toLowerCase();
-              if (normalizedMarket !== countryFilter) continue;
+              const rawMarket = (r.AdditionalAttribute2 || r.Market || "").trim();
+              const recordCountry = normalizeCountryCode(rawMarket).toLowerCase();
+              
+              if (recordCountry !== countryFilter) continue;
             }
             
             // Early exit for year filter
             if (yearFilter) {
-              // Check multiple possible year fields: Vintage, Year, or extract from wine code
-              const recordYear = (r.Vintage || r.Year || "").toString().trim();
               let yearMatch = false;
-              if (recordYear) {
-                // If vintage is like "2022", extract it
-                const yearMatch202x = recordYear.match(/20(\d{2})/);
-                const yearMatch2x = recordYear.match(/^(\d{2})$/);
-                if (yearMatch202x) {
-                  yearMatch = yearMatch202x[0] === yearFilter || yearMatch202x[1] === yearFilter.slice(-2);
-                } else if (yearMatch2x) {
-                  // Convert 2-digit year to 4-digit
-                  const fullYear = parseInt(yearMatch2x[1]) >= 50 
-                    ? `19${yearMatch2x[1]}` 
-                    : `20${yearMatch2x[1]}`;
-                  yearMatch = fullYear === yearFilter;
-                } else {
-                  yearMatch = recordYear === yearFilter || recordYear.includes(yearFilter);
+              
+              // Priority 1: Check DateShipped field (for exports, this is the primary date field)
+              const dateShipped = (r.DateShipped || "").toString().trim();
+              if (dateShipped) {
+                const dateObj = parseDate(dateShipped);
+                if (dateObj) {
+                  const shippedYear = dateObj.getFullYear().toString();
+                  const shippedYear2Digit = shippedYear.slice(-2);
+                  // Match full year or 2-digit year
+                  yearMatch = shippedYear === yearFilter || 
+                             shippedYear2Digit === yearFilter.slice(-2) ||
+                             shippedYear === `20${yearFilter.slice(-2)}`;
                 }
               }
-              // Also check if year is in AdditionalAttribute3 (wine code) or Stock field
+              
+              // Priority 2: Check DateArrival field if DateShipped didn't match
+              if (!yearMatch) {
+                const dateArrival = (r.DateArrival || "").toString().trim();
+                if (dateArrival) {
+                  const dateObj = parseDate(dateArrival);
+                  if (dateObj) {
+                    const arrivalYear = dateObj.getFullYear().toString();
+                    const arrivalYear2Digit = arrivalYear.slice(-2);
+                    yearMatch = arrivalYear === yearFilter || 
+                               arrivalYear2Digit === yearFilter.slice(-2) ||
+                               arrivalYear === `20${yearFilter.slice(-2)}`;
+                  }
+                }
+              }
+              
+              // Priority 3: Check Vintage, Year fields (fallback)
+              if (!yearMatch) {
+                const recordYear = (r.Vintage || r.Year || "").toString().trim();
+                if (recordYear) {
+                  const yearMatch202x = recordYear.match(/20(\d{2})/);
+                  const yearMatch2x = recordYear.match(/^(\d{2})$/);
+                  if (yearMatch202x) {
+                    yearMatch = yearMatch202x[0] === yearFilter || yearMatch202x[1] === yearFilter.slice(-2);
+                  } else if (yearMatch2x) {
+                    const fullYear = parseInt(yearMatch2x[1]) >= 50 
+                      ? `19${yearMatch2x[1]}` 
+                      : `20${yearMatch2x[1]}`;
+                    yearMatch = fullYear === yearFilter;
+                  } else {
+                    yearMatch = recordYear === yearFilter || recordYear.includes(yearFilter);
+                  }
+                }
+              }
+              
+              // Priority 4: Check if year is in AdditionalAttribute3 (wine code) or Stock field
               if (!yearMatch) {
                 const wineCode = (r.AdditionalAttribute3 || r.Stock || "").toString();
                 const yearInCode = wineCode.match(/_(\d{2})_|_(\d{4})_|^(\d{2})|^(\d{4})/);
@@ -339,6 +475,7 @@ export default function Dashboard() {
                   }
                 }
               }
+              
               if (!yearMatch) continue;
             }
             
@@ -475,7 +612,7 @@ export default function Dashboard() {
             
             filteredExports.push(r);
           }
-
+          console.log(filteredExports);
           // ───────── Stock & Exports Aggregation by Distributor and Wine ─────────
           // Use Map for better performance with large datasets
           const distributorStockByWine = new Map();
@@ -517,8 +654,10 @@ export default function Dashboard() {
             const e = filteredExports[i];
             
             // Get and normalize market from export record
-            const rawMarket = (e.Market || e.AdditionalAttribute2 || "").trim();
-            const normalizedMarket = normalizeCountryCode(rawMarket).toLowerCase();
+            // First try Market/AdditionalAttribute2, then fallback to company mapping
+            // Country is now set in AdditionalAttribute2 during normalization
+            let rawMarket = (e.AdditionalAttribute2 || e.Market || "").trim();
+            let normalizedMarket = normalizeCountryCode(rawMarket).toLowerCase();
             
             // Get customer/distributor name
             let customer = (e.Customer || e.Company || "Unknown").trim();
@@ -535,6 +674,11 @@ export default function Dashboard() {
             // Get wine code
             const wineCode = (e.AdditionalAttribute3 || "").toUpperCase().trim() || 
                             (e.Stock || e.ProductDescription || "").toUpperCase().trim();
+            // Skip if we still don't have a market (shouldn't happen after company mapping fallback, but safety check)
+            if (!normalizedMarket) {
+              continue;
+            }
+            
             if (!wineCode) {
               // Try to construct from Brand and Variety if available
               if (e.Brand && e.VarietyCode) {
@@ -576,12 +720,14 @@ export default function Dashboard() {
             const item = inTransitByMarketDistributorWine.get(key);
             item.inTransit += parseFloat(e.cases) || 0;
           }
-          
+          console.log(inTransitByMarketDistributorWine);
           // Convert to distributor/wine key format for compatibility (but keep market info)
           const inTransitByDistributorWine = new Map();
           for (const [key, transit] of inTransitByMarketDistributorWine.entries()) {
             // Only include in-transit for the current country filter (if set)
-            if (!countryFilter || transit.market === countryFilter) {
+            // Use transit.market (which should now be set from company mapping if needed)
+            const transitMarket = transit.market || transit.country || "";
+            if (!countryFilter || transitMarket === countryFilter) {
               const distributorWineKey = `${transit.distributor.toLowerCase()}_${transit.wineCode}`;
               if (!inTransitByDistributorWine.has(distributorWineKey)) {
                 inTransitByDistributorWine.set(distributorWineKey, {
@@ -626,7 +772,6 @@ export default function Dashboard() {
               });
             }
           }
-
           // Legacy aggregation for backward compatibility (aggregated by wine only)
           const stockByWine = new Map();
           for (const item of stockFloatByDistributorWine.values()) {
@@ -843,8 +988,86 @@ export default function Dashboard() {
         // stockFloatByDistributorWine is already built from filteredStock and filteredExports
         // which were filtered by distributor, wine type, country, and year filters
         // So no need to filter again - just convert to array
-        const stockFloatArray = Array.from(stockFloatByDistributorWine.values());
         
+        // Group transit items by expected arrival month
+        // Key: `${year}_${month}`, Value: Map of transit items for that month
+        const transitByMonth = new Map();
+        const currentDate = new Date();
+        const transitCurrentYear = currentDate.getFullYear();
+        const transitCurrentMonth = currentDate.getMonth();
+        
+        // Process each export to determine which month it should be allocated to
+        for (let i = 0; i < filteredExports.length; i++) {
+          const e = filteredExports[i];
+          const dateShipped = e.DateShipped ? parseDate(e.DateShipped.toString().trim()) : null;
+          const dateArrival = e.DateArrival ? parseDate(e.DateArrival.toString().trim()) : null;
+          
+          // Determine expected arrival month
+          let arrivalMonth = null;
+          let arrivalYear = null;
+          
+          if (dateArrival) {
+            // Use actual arrival date
+            arrivalMonth = dateArrival.getMonth();
+            arrivalYear = dateArrival.getFullYear();
+          } else if (dateShipped) {
+            // Estimate arrival based on shipping time
+            // Use average shipping time from ShippingDays if available, otherwise estimate
+            const shippingDays = e.ShippingDays || e.DaysInTransit || 30; // Default 30 days
+            const estimatedArrival = new Date(dateShipped);
+            estimatedArrival.setDate(estimatedArrival.getDate() + Math.ceil(shippingDays));
+            arrivalMonth = estimatedArrival.getMonth();
+            arrivalYear = estimatedArrival.getFullYear();
+          } else {
+            // No date info: assume current month if status indicates in transit
+            const status = (e.Status || "").toLowerCase().trim();
+            if (status.includes("transit") || status.includes("waiting")) {
+              arrivalMonth = transitCurrentMonth;
+              arrivalYear = transitCurrentYear;
+            }
+          }
+          
+          if (arrivalMonth !== null && arrivalYear !== null) {
+            // Get distributor and wine code
+            let customer = (e.Customer || e.Company || "Unknown").trim();
+            let cleanedCustomer = customer.replace(/^[A-Z]{2,3}\s*-\s*/i, "").trim();
+            if (!cleanedCustomer || cleanedCustomer === customer) {
+              cleanedCustomer = customer.replace(/^[A-Z]{2,3}\s+/i, "").trim();
+            }
+            if (!cleanedCustomer || cleanedCustomer === customer) {
+              cleanedCustomer = customer;
+            }
+            
+            const wineCode = (e.AdditionalAttribute3 || "").toUpperCase().trim() || 
+                            (e.Stock || e.ProductDescription || "").toUpperCase().trim();
+            
+            if (wineCode) {
+              const monthKey = `${arrivalYear}_${monthNames[arrivalMonth]}`;
+              const itemKey = `${cleanedCustomer.toLowerCase()}_${wineCode}`;
+              
+              if (!transitByMonth.has(monthKey)) {
+                transitByMonth.set(monthKey, new Map());
+              }
+              
+              const monthTransit = transitByMonth.get(monthKey);
+              if (!monthTransit.has(itemKey)) {
+                monthTransit.set(itemKey, {
+                  distributor: cleanedCustomer,
+                  wineCode: wineCode,
+                  inTransit: 0,
+                  brand: e.Brand || "",
+                  variety: e.Variety || "",
+                  country: e.AdditionalAttribute2 || e.Market || ""
+                });
+              }
+              
+              const item = monthTransit.get(itemKey);
+              item.inTransit += parseFloat(e.cases) || 0;
+            }
+          }
+        }
+        
+        const stockFloatArray = Array.from(stockFloatByDistributorWine.values());
         // Helper function to normalize strings for comparison (used in export inclusion check)
         const normalizeForMatch = (str) => {
           if (!str) return "";
@@ -991,7 +1214,6 @@ export default function Dashboard() {
             }
           }
         }
-        
         // Calculate stock float per distributor and wine type
         const projection = monthsToDisplay.map(({ month, year }, idx) => {
           // Get market for current filter (or use item's market for market-specific predictions)
@@ -1018,9 +1240,47 @@ export default function Dashboard() {
             }
           }
 
-          // Limit to first 1000 items to prevent performance issues with very large datasets
-          const limitedStockFloat = stockFloatArray;
+          // Get transit items for this specific month
+          const monthKey = `${year}_${month}`;
+          const monthTransit = transitByMonth.get(monthKey) || new Map();
           
+          // Build stock float array with month-specific transit data
+          // Start with base stock items
+          const monthStockFloatArray = stockFloatArray.map(item => {
+            const itemKey = `${item.distributor.toLowerCase()}_${item.wineCode}`;
+            const transitItem = monthTransit.get(itemKey);
+            
+            // Get transit for this month (only items arriving in this month)
+            const inTransitThisMonth = transitItem ? transitItem.inTransit : 0;
+            
+            return {
+              ...item,
+              inTransit: inTransitThisMonth,
+              totalStockFloat: item.stock + inTransitThisMonth
+            };
+          });
+          
+          // Add transit-only items (items that don't have stock but are in transit this month)
+          for (const [itemKey, transitItem] of monthTransit.entries()) {
+            const exists = monthStockFloatArray.some(item => 
+              `${item.distributor.toLowerCase()}_${item.wineCode}` === itemKey
+            );
+            if (!exists) {
+              monthStockFloatArray.push({
+                distributor: transitItem.distributor,
+                wineCode: transitItem.wineCode,
+                stock: 0,
+                inTransit: transitItem.inTransit,
+                totalStockFloat: transitItem.inTransit,
+                brand: transitItem.brand,
+                variety: transitItem.variety,
+                country: transitItem.country
+              });
+            }
+          }
+
+          // Limit to first 1000 items to prevent performance issues with very large datasets
+          const limitedStockFloat = monthStockFloatArray;
           const distributorProjections = limitedStockFloat.map(item => {
             // Get market for this item
             const itemMarket = (item.country || "").toLowerCase();
@@ -1035,24 +1295,23 @@ export default function Dashboard() {
               const marketPredictedSales = marketPred.avgSales * Math.max(0.5, trendFactor);
               
               // Distribute proportionally to this wine within the market
-              const totalStockForMarket = stockFloatArray
+              const totalStockForMarket = monthStockFloatArray
                 .filter(i => (i.country || "").toLowerCase() === itemMarket)
                 .reduce((sum, i) => sum + i.totalStockFloat, 0);
               const wineProportion = totalStockForMarket > 0 
                 ? item.totalStockFloat / totalStockForMarket 
-                : 1 / stockFloatArray.filter(i => (i.country || "").toLowerCase() === itemMarket).length;
+                : 1 / monthStockFloatArray.filter(i => (i.country || "").toLowerCase() === itemMarket).length;
               winePredictedSales = marketPredictedSales * wineProportion;
             } else {
               // Fallback: distribute overall predicted sales proportionally
-              const totalStockForPeriod = stockFloatArray.reduce((sum, i) => sum + i.totalStockFloat, 0);
+              const totalStockForPeriod = monthStockFloatArray.reduce((sum, i) => sum + i.totalStockFloat, 0);
               const wineProportion = totalStockForPeriod > 0 
                 ? item.totalStockFloat / totalStockForPeriod 
-                : 1 / stockFloatArray.length;
+                : 1 / monthStockFloatArray.length;
               winePredictedSales = predictedSales * wineProportion;
             }
             
             // Stock Float = Stock on Hand + In Transit - Predicted Sales
-            // totalStockFloat already includes stock + in-transit from line 616
             const stockFloat = Math.max(0, item.totalStockFloat - winePredictedSales);
             
             return {
@@ -1062,16 +1321,15 @@ export default function Dashboard() {
               variety: item.variety,
               country: item.country,
               stock: item.stock, // Stock on hand
-              inTransit: item.inTransit, // In-transit cases
+              inTransit: item.inTransit, // In-transit cases for this month
               predictedSales: winePredictedSales,
               stockFloat: stockFloat // Stock on hand + in-transit - predicted sales
             };
           });
 
           // Aggregate for overall projection
-          // totalStockFloat already includes stock + in-transit
-          const totalStock = stockFloatArray.reduce((sum, item) => sum + item.stock, 0);
-          const totalInTransit = stockFloatArray.reduce((sum, item) => sum + item.inTransit, 0);
+          const totalStock = monthStockFloatArray.reduce((sum, item) => sum + item.stock, 0);
+          const totalInTransit = monthStockFloatArray.reduce((sum, item) => sum + item.inTransit, 0);
           const totalStockWithInTransit = totalStock + totalInTransit;
           const totalStockFloat = Math.max(0, totalStockWithInTransit - predictedSales);
 
@@ -1085,7 +1343,6 @@ export default function Dashboard() {
           };
         });
         setStockFloatData(projection);
-
         // ───────── Forecast Accuracy ─────────
         // Calculate accuracy by comparing predicted vs actual sales
         const accuracyData = projection.map((p) => {
