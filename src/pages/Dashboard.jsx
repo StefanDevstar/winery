@@ -71,7 +71,7 @@ function parseDate(dateStr) {
 
 export default function Dashboard() {
   const [filters, setFilters] = useState({
-    country: "usa",
+    country: "nzl", // Default to New Zealand (first in the list)
     distributor: "all",
     wineType: "all",
     year: "all",
@@ -614,6 +614,10 @@ export default function Dashboard() {
           }
           console.log(filteredExports);
           // ───────── Stock & Exports Aggregation by Distributor and Wine ─────────
+          // NOTE: Currently using 'Available' field from distributor stock data (depletion summary).
+          // This field represents sales/depletion quantities, NOT actual stock on hand.
+          // TODO: Once client provides distributor stock on hand spreadsheets, update to use actual stock levels.
+          // For now, this serves as a placeholder that will need to be updated when distributor stock reports are available.
           // Use Map for better performance with large datasets
           const distributorStockByWine = new Map();
           for (let i = 0; i < filteredStock.length; i++) {
@@ -640,10 +644,11 @@ export default function Dashboard() {
                 stock: 0,
                 brand: r.Brand || "",
                 variety: r.Variety || r.ProductName || "",
-                country: r.AdditionalAttribute2 || ""
+                country: r.AdditionalAttribute2 || "" // Preserves 'au-b', 'au-c', 'ire', etc.
               });
             }
             const item = distributorStockByWine.get(key);
+            // TODO: Replace 'Available' with actual stock on hand field from distributor stock reports
             item.stock += parseFloat(r.Available) || 0;
           }
 
@@ -1345,27 +1350,50 @@ export default function Dashboard() {
         setStockFloatData(projection);
         // ───────── Forecast Accuracy ─────────
         // Calculate accuracy by comparing predicted vs actual sales
-        const accuracyData = projection.map((p) => {
+        // Only calculate accuracy for periods where we have actual historical data
+        const accuracyData = [];
+        
+        for (const p of projection) {
           const { period, predictedSales } = p;
           
-          // Get actual sales from historical data if available
+          // Get actual sales from historical data - only use if we have real data
           const [month, year] = period.split(' ');
           const fullYear = '20' + year;
-          const actualSales = sales[fullYear]?.[month] || (predictedSales * (0.9 + Math.random() * 0.2));
           
-          const accuracy = predictedSales
-            ? Math.round(
-                (1 - Math.abs(predictedSales - actualSales) / Math.max(predictedSales, 1)) * 100
-              )
-            : 0;
+          // Try to get actual sales from filtered sales data first (more accurate)
+          const periodKey = `${fullYear}_${month}`;
+          let actualSales = filteredSalesByPeriod.get(periodKey);
           
-          return {
-            period,
-            actual: Math.round(actualSales),
-            forecast: Math.round(predictedSales),
-            accuracy: Math.max(0, Math.min(100, accuracy)), // Clamp between 0-100
-          };
-        });
+          // Fallback to iDig sales data if filtered data not available
+          if (!actualSales && sales[fullYear] && sales[fullYear][month]) {
+            actualSales = sales[fullYear][month];
+          }
+          
+          // Only calculate accuracy if we have actual historical data
+          // Don't generate fake data - skip periods without actuals
+          if (actualSales !== undefined && actualSales !== null && actualSales > 0 && predictedSales > 0) {
+            const accuracy = Math.round(
+              (1 - Math.abs(predictedSales - actualSales) / Math.max(predictedSales, actualSales, 1)) * 100
+            );
+            
+            accuracyData.push({
+              period,
+              actual: Math.round(actualSales),
+              forecast: Math.round(predictedSales),
+              accuracy: Math.max(0, Math.min(100, accuracy)), // Clamp between 0-100
+            });
+          } else if (filters.viewMode === "forward") {
+            // For forward predictions, show forecast only (no accuracy calculation without actuals)
+            accuracyData.push({
+              period,
+              actual: 0, // No actual data yet
+              forecast: Math.round(predictedSales),
+              accuracy: null, // Don't show accuracy for future periods without actuals
+            });
+          }
+          // For historical periods without actuals, skip them entirely
+        }
+        
         setForecastAccuracyData(accuracyData);
         
           // ───────── Shipping Time Analysis ─────────

@@ -6,12 +6,15 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
 export default function ForecastAccuracyChart({ data, onExport }) {
-  const averageAccuracy = data.length > 0 
-    ? (data.reduce((sum, d) => sum + d.accuracy, 0) / data.length).toFixed(1)
-    : 0;
+  // Only calculate average from periods with actual accuracy data (not null)
+  const accuracyDataPoints = data.filter(d => d.accuracy !== null && d.accuracy !== undefined);
+  const averageAccuracy = accuracyDataPoints.length > 0 
+    ? (accuracyDataPoints.reduce((sum, d) => sum + d.accuracy, 0) / accuracyDataPoints.length).toFixed(1)
+    : 'N/A';
 
-  const trend = data.length >= 2 
-    ? data[data.length - 1].accuracy - data[0].accuracy
+  // Calculate trend only from periods with accuracy data
+  const trend = accuracyDataPoints.length >= 2 
+    ? accuracyDataPoints[accuracyDataPoints.length - 1].accuracy - accuracyDataPoints[0].accuracy
     : 0;
 
   const customTooltip = ({ active, payload, label }) => {
@@ -27,9 +30,15 @@ export default function ForecastAccuracyChart({ data, onExport }) {
             <p style={{ color: '#c9a96e' }}>
               Forecast: {dataPoint.forecast?.toLocaleString()} cases
             </p>
-            <p className={`font-semibold pt-1 border-t ${dataPoint.accuracy >= 90 ? 'text-green-600' : dataPoint.accuracy >= 80 ? 'text-yellow-600' : 'text-red-600'}`}>
-              Accuracy: {dataPoint.accuracy}%
-            </p>
+            {dataPoint.accuracy !== null && dataPoint.accuracy !== undefined ? (
+              <p className={`font-semibold pt-1 border-t ${dataPoint.accuracy >= 90 ? 'text-green-600' : dataPoint.accuracy >= 80 ? 'text-yellow-600' : 'text-red-600'}`}>
+                Accuracy: {dataPoint.accuracy}%
+              </p>
+            ) : (
+              <p className="font-semibold pt-1 border-t text-gray-500">
+                Accuracy: N/A (Future Period)
+              </p>
+            )}
           </div>
         </div>
       );
@@ -49,8 +58,8 @@ export default function ForecastAccuracyChart({ data, onExport }) {
           </p>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
-          <Badge variant={averageAccuracy >= 85 ? "default" : "secondary"} className="flex items-center gap-1 text-xs">
-            {trend >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+          <Badge variant={averageAccuracy !== 'N/A' && parseFloat(averageAccuracy) >= 85 ? "default" : "secondary"} className="flex items-center gap-1 text-xs">
+            {trend >= 0 && averageAccuracy !== 'N/A' ? <TrendingUp className="w-3 h-3" /> : trend < 0 ? <TrendingDown className="w-3 h-3" /> : null}
             <span className="hidden sm:inline">{averageAccuracy}% Avg Accuracy</span>
             <span className="sm:hidden">{averageAccuracy}%</span>
           </Badge>
@@ -109,6 +118,7 @@ export default function ForecastAccuracyChart({ data, onExport }) {
                 strokeWidth={3}
                 name="Accuracy %"
                 dot={{ fill: '#6366f1', strokeWidth: 2, r: 4 }}
+                connectNulls={false}
               />
             </ComposedChart>
           </ResponsiveContainer>
@@ -129,8 +139,8 @@ export default function ForecastAccuracyChart({ data, onExport }) {
           </div>
           <div>
             <p className="text-slate-500 text-xs">Accuracy Trend</p>
-            <p className={`font-semibold text-base sm:text-lg ${trend >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              {trend >= 0 ? '+' : ''}{trend.toFixed(1)}%
+            <p className={`font-semibold text-base sm:text-lg ${trend >= 0 ? 'text-green-600' : trend < 0 ? 'text-red-600' : 'text-gray-500'}`}>
+              {accuracyDataPoints.length >= 2 ? (trend >= 0 ? '+' : '') + trend.toFixed(1) + '%' : 'N/A'}
             </p>
           </div>
         </div>

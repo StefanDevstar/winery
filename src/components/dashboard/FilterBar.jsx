@@ -30,18 +30,104 @@ export default function FilterBar({ filters, onFilterChange }) {
     }
   }, [filters.year]); // Only depend on filters.year
 
-  // Extract available distributors/states and wine types based on selected country
+  // Extract available countries, distributors/states and wine types from data
   const filterOptions = useMemo(() => {
     try {
       const distributorRaw = localStorage.getItem("vc_distributor_stock_data");
-      if (!distributorRaw) {
-        return { distributors: [], wineTypes: [] };
+      const distributorMetadataRaw = localStorage.getItem("vc_distributor_stock_metadata");
+      
+      let distributorStock = [];
+      let metadata = null;
+      
+      if (distributorRaw) {
+        distributorStock = JSON.parse(distributorRaw);
+        if (!Array.isArray(distributorStock)) {
+          distributorStock = [];
+        }
       }
-
-      const distributorStock = JSON.parse(distributorRaw);
-      if (!Array.isArray(distributorStock) || distributorStock.length === 0) {
-        return { distributors: [], wineTypes: [] };
+      
+      if (distributorMetadataRaw) {
+        metadata = JSON.parse(distributorMetadataRaw);
       }
+      
+      if (distributorStock.length === 0) {
+        return { countries: [], distributors: [], wineTypes: [] };
+      }
+      
+      // Extract countries from metadata sheet names (this is the source of truth)
+      // Sheet names directly map to countries: NZL → nzl, AU-B → au-b, USA → usa, IRE → ire
+      const countrySet = new Set();
+      
+      // Country code to display name mapping
+      const countryDisplayNames = {
+        'usa': 'USA',
+        'au-b': 'AU-B',
+        'au-c': 'AU-C',
+        'nzl': 'New Zealand',
+        'ire': 'Ireland'
+      };
+      
+      // Map sheet names to country codes
+      const sheetNameToCountryCode = {
+        'NZL': 'nzl',
+        'AUB': 'au-b',
+        'AU-B': 'au-b',
+        'AUC': 'au-c',
+        'AU-C': 'au-c',
+        'USA': 'usa',
+        'IRE': 'ire'
+      };
+      
+      // Extract countries from metadata sheet names
+      if (metadata && metadata.sheetNames && Array.isArray(metadata.sheetNames)) {
+        metadata.sheetNames.forEach(sheetName => {
+          const normalizedSheetName = sheetName.toUpperCase().trim();
+          // Map sheet name to country code
+          const countryCode = sheetNameToCountryCode[normalizedSheetName];
+          if (countryCode) {
+            countrySet.add(countryCode);
+          } else {
+            // Fallback: try to normalize sheet name directly
+            const fallbackCode = normalizedSheetName.toLowerCase();
+            if (fallbackCode) {
+              countrySet.add(fallbackCode);
+            }
+          }
+        });
+      }
+      
+      // Fallback: if no metadata, extract from actual data (for backward compatibility)
+      if (countrySet.size === 0) {
+        distributorStock.forEach(r => {
+          const countryCode = (r.AdditionalAttribute2 || "").toLowerCase().trim();
+          if (countryCode) {
+            countrySet.add(countryCode);
+          }
+        });
+      }
+      
+      // Convert to sorted array with display names
+      // Priority order: USA, AU-B, AU-C, NZL, IRE
+      const priorityCountries = ['usa', 'au-b', 'au-c', 'nzl', 'ire'];
+      const countries = Array.from(countrySet)
+        .map(code => ({
+          code: code,
+          name: countryDisplayNames[code] || code.toUpperCase()
+        }))
+        .sort((a, b) => {
+          const aPriority = priorityCountries.indexOf(a.code);
+          const bPriority = priorityCountries.indexOf(b.code);
+          
+          // If both are in priority list, sort by priority
+          if (aPriority >= 0 && bPriority >= 0) {
+            return aPriority - bPriority;
+          }
+          // If only one is in priority list, prioritize it
+          if (aPriority >= 0) return -1;
+          if (bPriority >= 0) return 1;
+          // Otherwise sort alphabetically
+          return a.name.localeCompare(b.name);
+        });
 
       const countryFilter = filters.country === "all" ? null : filters.country.toLowerCase();
 
@@ -176,10 +262,10 @@ export default function FilterBar({ filters, onFilterChange }) {
         .map(([code, name]) => ({ code: code.toLowerCase(), name }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
-      return { distributors, wineTypes };
+      return { countries, distributors, wineTypes };
     } catch (err) {
       console.warn("Error extracting filter options:", err);
-      return { distributors: [], wineTypes: [] };
+      return { countries: [], distributors: [], wineTypes: [] };
     }
   }, [filters.country]);
 
@@ -228,12 +314,22 @@ export default function FilterBar({ filters, onFilterChange }) {
               <SelectValue placeholder="Country" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="usa">USA</SelectItem>
-              <SelectItem value="au">Australia</SelectItem>
-              <SelectItem value="nzl">New Zealand</SelectItem>
-              <SelectItem value="jap">Japan</SelectItem>
-              <SelectItem value="den">Denmark</SelectItem>
-              <SelectItem value="pol">Poland</SelectItem>
+              {filterOptions.countries.length > 0 ? (
+                filterOptions.countries.map((country) => (
+                  <SelectItem key={country.code} value={country.code}>
+                    {country.name}
+                  </SelectItem>
+                ))
+              ) : (
+                // Fallback options if no data is available
+                <>
+                  <SelectItem value="usa">USA</SelectItem>
+                  <SelectItem value="au-b">AU-B</SelectItem>
+                  <SelectItem value="au-c">AU-C</SelectItem>
+                  <SelectItem value="nzl">New Zealand</SelectItem>
+                  <SelectItem value="ire">Ireland</SelectItem>
+                </>
+              )}
             </SelectContent>
           </Select>
 

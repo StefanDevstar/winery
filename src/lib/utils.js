@@ -229,13 +229,29 @@ export function parseExcel(arrayBuffer) {
         return; // Skip empty sheets but include them
       }
       
-      // Find the header row (first non-empty row)
+      // Special handling for IRE sheet - header row is at index 5 (row 6 in Excel, 0-indexed as 5)
       let headerRowIndex = -1;
-      for (let i = 0; i < sheetData.length; i++) {
-        const row = sheetData[i];
-        if (row && row.length > 0 && row.some(cell => cell && String(cell).trim() !== '')) {
-          headerRowIndex = i;
-          break;
+      if (sheetName.toUpperCase() === 'IRE') {
+        // For IRE sheet, headers are in row 5 (0-indexed)
+        // Row 0: "SUPPLIER REPORT" header
+        // Row 1-2: Empty
+        // Row 3: Supplier info
+        // Row 4: Dates
+        // Row 5: Actual headers ("Rank", "SKU", "Product", "Jan-25", etc.)
+        // Row 6+: Data rows
+        if (sheetData.length > 5) {
+          headerRowIndex = 5;
+        }
+      }
+      
+      // For other sheets, find the header row (first non-empty row)
+      if (headerRowIndex === -1) {
+        for (let i = 0; i < sheetData.length; i++) {
+          const row = sheetData[i];
+          if (row && row.length > 0 && row.some(cell => cell && String(cell).trim() !== '')) {
+            headerRowIndex = i;
+            break;
+          }
         }
       }
       
@@ -305,7 +321,7 @@ const COMPANY_TO_COUNTRY_MAP = {
   "The Battle Store General Trading": { "country": "AE", "iso2": "AE" },
   "The Bottle Store": { "country": "AE", "iso2": "AE" },
   "Centaurus": { "country": "AE", "iso2": "AE" },
-  "Curious Wines": { "country": "IE", "iso2": "IE" },
+  "Curious Wines": { "country": "ire", "iso2": "IE" },
   "Decorum": { "country": "GB", "iso2": "GB" },
   "Quality Wine": { "country": "GB", "iso2": "GB" },
   "Jean Arnaud": { "country": "NL", "iso2": "NL" },
@@ -385,8 +401,10 @@ export function normalizeCountryCode(countryCode) {
     'AU': 'au',
     'AUS': 'au',
     'AUSTRALIA': 'au',
-    'AU-B': 'au',
-    'AU-C': 'au',
+    'AU-B': 'au-b',
+    'AU-C': 'au-c',
+    'AUB': 'au-b',
+    'AUC': 'au-c',
     
     // New Zealand variations
     'NZ': 'nzl',
@@ -433,7 +451,7 @@ export function normalizeCountryCode(countryCode) {
     'DE': 'den', // Denmark (already mapped but adding for clarity)
   };
   
-  // Direct match
+  // Direct match (exact match first - highest priority)
   if (countryMap[normalized]) {
     return countryMap[normalized];
   }
@@ -442,16 +460,27 @@ export function normalizeCountryCode(countryCode) {
   // e.g., "AU/C KO" should use "KO"
   const parts = normalized.split(/\s+/);
   if (parts.length > 1) {
-    // Use the last part as it might be the second market code
-    const lastPart = parts[parts.length - 1];
-    if (countryMap[lastPart]) {
-      return countryMap[lastPart];
+    // Check each part for exact match
+    for (const part of parts.reverse()) { // Check from last to first
+      if (countryMap[part]) {
+        return countryMap[part];
+      }
     }
   }
   
-  // Partial match (e.g., "USA" in "USA_FL" or "NZ_" in "NZ_GROCERY")
-  for (const [excelCode, filterCode] of Object.entries(countryMap)) {
-    if (normalized.includes(excelCode) || excelCode.includes(normalized)) {
+  // Partial match - but prioritize longer/more specific codes first
+  // Sort by length descending to match 'AU-B' before 'AU'
+  const sortedCodes = Object.entries(countryMap).sort((a, b) => b[0].length - a[0].length);
+  for (const [excelCode, filterCode] of sortedCodes) {
+    // Only match if it's a word boundary match (not just substring)
+    // This prevents 'AU' from matching 'AU-B'
+    if (normalized === excelCode || 
+        normalized.startsWith(excelCode + '-') ||
+        normalized.startsWith(excelCode + '_') ||
+        normalized.startsWith(excelCode + '/') ||
+        normalized.endsWith('-' + excelCode) ||
+        normalized.endsWith('_' + excelCode) ||
+        normalized.endsWith('/' + excelCode)) {
       return filterCode;
     }
   }
@@ -671,14 +700,15 @@ function parseAUBSheet(records) {
       const variety = parts.slice(1).join(' ') || '';
       
       return {
-        AdditionalAttribute2: normalizeCountryCode('AU'), // Normalized country code (au)
+        AdditionalAttribute2: 'au-b', // Preserve AU-B as separate country code
         AdditionalAttribute3: wineName.toUpperCase().replace(/\s+/g, '_'), // Wine code
         ProductName: wineName, // Product name
         Location: state ? `${state}_${customer}`.substring(0, 50) : customer.substring(0, 50), // Location (State_Customer)
         Available: quantity, // Quantity sold (depletion)
         _month: month,
         _year: year,
-        _customer: customer
+        _customer: customer,
+        _sheetName: 'AU-B'
       };
     })
     .filter(record => !isEmptyRecord(record)); // Filter empty records
@@ -703,12 +733,13 @@ function parseAUCSheet(records) {
       const salesQty = parseFloat(String(r['Sales Qty (Singles)'] || '0').replace(/,/g, '')) || 0;
       
       return {
-        AdditionalAttribute2: normalizeCountryCode('AU'), // Normalized country code (au)
+        AdditionalAttribute2: 'au-c', // Preserve AU-C as separate country code
         AdditionalAttribute3: item, // Item code
         ProductName: `Item ${item}`, // Product name
         Location: banner.toUpperCase().replace(/\s+/g, '_'), // Location (Banner)
         Available: salesQty, // Sales quantity (depletion)
-        _banner: banner
+        _banner: banner,
+        _sheetName: 'AU-C'
       };
     })
     .filter(record => !isEmptyRecord(record)); // Filter empty records
@@ -804,12 +835,95 @@ function parseUSASheet(records) {
 }
 
 /**
- * Parses IRE sheet - Supplier report (structure unclear, minimal data)
+ * Parses IRE sheet - Supplier report
+ * Structure: 
+ * - Row 0: "SUPPLIER REPORT" header text
+ * - Row 1-2: Empty or dates
+ * - Row 3: Headers (Rank, SKU, Product, Sales 2024, Retail, Trade, Jan-25, Feb-25, ..., Dec-25, Sales 2025, ...)
+ * - Row 4+: Data rows
+ * 
+ * Note: parseExcel now uses row 3 (index 3) as headers for IRE sheet, so records will have keys like:
+ * "Rank", "SKU", "Product", "Sales 2024", "Retail", "Trade", "Jan-25", "Feb-25", ..., "Dec-25", etc.
  */
 function parseIRESheet(records) {
-  // IRE sheet structure is unclear from the sample
-  // Return empty array for now, can be enhanced when structure is clear
-  return [];
+  // Filter out completely empty records
+  const filteredRecords = records.filter(r => {
+    if (!r || typeof r !== 'object') return false;
+    return Object.values(r).some(v => v !== null && v !== undefined && String(v).trim() !== '');
+  });
+  
+  const normalized = [];
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  
+  // Map of column names to month (based on the structure: Jan-25, Feb-25, ..., Dec-25)
+  // The actual structure has columns: Rank, SKU, Product, Sales 2024, Retail, Trade, Jan-25, Feb-25, ..., Dec-25
+  const monthColumnMap = {
+    'Jan-25': { month: 'Jan', year: '2025' },
+    'Feb-25': { month: 'Feb', year: '2025' },
+    'Mar-25': { month: 'Mar', year: '2025' },
+    'Apr-25': { month: 'Apr', year: '2025' },
+    'May-25': { month: 'May', year: '2025' },
+    'Jun-25': { month: 'Jun', year: '2025' },
+    'Jul-25': { month: 'Jul', year: '2025' },
+    'Aug-25': { month: 'Aug', year: '2025' },
+    'Sept-25': { month: 'Sep', year: '2025' }, // Note: header uses "Sept-25" but we normalize to "Sep"
+    'Sep-25': { month: 'Sep', year: '2025' },
+    'Oct-25': { month: 'Oct', year: '2025' },
+    'Nov-25': { month: 'Nov', year: '2025' },
+    'Dec-25': { month: 'Dec', year: '2025' }
+  };
+  
+  filteredRecords.forEach(r => {
+    // Extract fields using the correct column names (row 3 headers)
+    const rank = String(r['Rank'] || r['SUPPLIER REPORT'] || '').trim();
+    const sku = String(r['SKU'] || r['__EMPTY'] || '').trim();
+    const product = String(r['Product'] || r['__EMPTY_1'] || '').trim();
+    
+    // Skip if this looks like a header row (contains "Rank", "SKU", "Supplier", etc.)
+    if (rank === 'Rank' || rank === 'Supplier' || !product || product === 'Product') {
+      return;
+    }
+    
+    // Skip if we don't have at least SKU or Product
+    if (!sku && !product) {
+      return;
+    }
+    
+    // Skip if rank is not a number (valid data rows should have numeric ranks like "1", "2", etc.)
+    if (rank && isNaN(parseInt(rank))) {
+      return;
+    }
+    
+    // Get product name (prefer SKU for code, Product for name)
+    const productCode = sku || product.toUpperCase().replace(/\s+/g, '_');
+    const productName = product || sku;
+    
+    // Process monthly columns (Jan-25 through Dec-25)
+    Object.keys(monthColumnMap).forEach(colKey => {
+      const monthInfo = monthColumnMap[colKey];
+      const value = r[colKey];
+      
+      // Parse the value (remove commas, handle empty/null)
+      const salesValue = value ? parseFloat(String(value).replace(/,/g, '')) : 0;
+      
+      if (salesValue > 0) {
+        normalized.push({
+          AdditionalAttribute2: 'ire', // Ireland country code
+          AdditionalAttribute3: productCode.toUpperCase().replace(/\s+/g, '_'), // Wine code (SKU or product)
+          ProductName: productName.trim(), // Product name
+          Location: 'IRELAND', // Location (all from Ireland)
+          Available: salesValue, // Monthly sales (depletion)
+          _month: monthInfo.month,
+          _year: monthInfo.year,
+          _sku: sku,
+          _rank: rank,
+          _sheetName: 'IRE'
+        });
+      }
+    });
+  });
+  
+  return filterEmptyRecords(normalized);
 }
 
 /**
