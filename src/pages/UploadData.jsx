@@ -327,14 +327,14 @@ export default function UploadDataPage() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-          <DataUploadCard
+          {/* <DataUploadCard
             title="iDig Sales Data"
             description="Monthly sales data from iDig platform"
             Icon={TrendingUp}
             onFileUpload={(file) => handleFileUpload(file, 'sales')}
             processingStatus={statuses.sales}
             acceptFileTypes=".xlsx,.xls,.csv"
-          />
+          /> */}
 
           <DataUploadCard
             title="All Export Running Record"
