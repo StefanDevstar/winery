@@ -614,10 +614,18 @@ export default function Dashboard() {
           }
           console.log(filteredExports);
           // ───────── Stock & Exports Aggregation by Distributor and Wine ─────────
-          // NOTE: Currently using 'Available' field from distributor stock data (depletion summary).
+          // IMPORTANT: Currently using 'Available' field from distributor stock data (depletion summary).
           // This field represents sales/depletion quantities, NOT actual stock on hand.
-          // TODO: Once client provides distributor stock on hand spreadsheets, update to use actual stock levels.
-          // For now, this serves as a placeholder that will need to be updated when distributor stock reports are available.
+          // 
+          // CLIENT REQUIREMENT: Stock on hand should come from distributor stock on hand spreadsheets
+          // (not warehouse stock). Client will provide these spreadsheets with instructions.
+          // 
+          // TODO: Once client provides distributor stock on hand spreadsheets, update to:
+          // 1. Parse the new stock on hand spreadsheets
+          // 2. Replace 'r.Available' below with the actual stock on hand field from those reports
+          // 3. Keep 'Available' field for sales/depletion calculations only
+          // 
+          // For now, this serves as a placeholder using depletion data as a proxy for stock.
           // Use Map for better performance with large datasets
           const distributorStockByWine = new Map();
           for (let i = 0; i < filteredStock.length; i++) {
@@ -648,7 +656,8 @@ export default function Dashboard() {
               });
             }
             const item = distributorStockByWine.get(key);
-            // TODO: Replace 'Available' with actual stock on hand field from distributor stock reports
+            // TEMPORARY: Using 'Available' (depletion) as proxy for stock on hand
+            // TODO: Replace with actual stock on hand from distributor stock reports when available
             item.stock += parseFloat(r.Available) || 0;
           }
 
@@ -816,9 +825,13 @@ export default function Dashboard() {
                 return list;
               })();
 
-        // ───────── Sales Trend Calculation from Depletion Summary ─────────
-        // Use depletion summary data (distributor stock data) to create sales predictions per market
-        // Group sales by market, period (year/month) for trend analysis
+        // ───────── Sales Prediction Calculation from Depletion Summary ─────────
+        // SIMPLE FORMULA: Average = Sum / Count
+        // Sum = total sales of cases in the observed period
+        // Count = number of months in the observed period
+        // Example: 2000, 3000, 4000 → sum=9000, count=3 → average=3000
+        // Use this average to predict future sales (no trends in initial scope)
+        // ONLY use depletion summary data (no iDig sales data)
         
         // Helper function to normalize month format to month names (Jan, Feb, etc.)
         const normalizeMonth = (month) => {
@@ -865,7 +878,6 @@ export default function Dashboard() {
           return monthStr;
         };
         
-        const salesByMarketPeriod = new Map(); // key: `${market}_${year}_${normalizedMonth}`
         const salesByMarket = new Map(); // key: market, value: array of {year, month, value}
         const filteredSalesByPeriod = new Map(); // key: `${year}_${normalizedMonth}` (overall)
         
@@ -882,15 +894,11 @@ export default function Dashboard() {
           
           if (normalizedMonth && year && salesValue > 0 && market) {
             const periodKey = `${year}_${normalizedMonth}`;
-            const marketPeriodKey = `${market}_${year}_${normalizedMonth}`;
             
             // Aggregate by period (for overall)
             filteredSalesByPeriod.set(periodKey, (filteredSalesByPeriod.get(periodKey) || 0) + salesValue);
             
-            // Aggregate by market and period (for market-specific predictions)
-            salesByMarketPeriod.set(marketPeriodKey, (salesByMarketPeriod.get(marketPeriodKey) || 0) + salesValue);
-            
-            // Also store in market-specific array for trend calculation (with normalized month)
+            // Store in market-specific array for average calculation
             if (!salesByMarket.has(market)) {
               salesByMarket.set(market, []);
             }
@@ -907,53 +915,25 @@ export default function Dashboard() {
           });
         }
         
-        // Calculate predictions per market from depletion summary data
-        const marketPredictions = new Map(); // key: market, value: {avgSales, trend, salesHistory}
+        // Calculate simple average per market: Average = Sum / Count
+        // Sum = total sales in observed period, Count = number of months
+        const marketPredictions = new Map(); // key: market, value: {avgSales}
         for (const [market, salesArray] of salesByMarket.entries()) {
           if (salesArray.length > 0) {
-            const last6Months = salesArray.slice(-6);
-            const avgSales = last6Months.length > 0
-              ? last6Months.reduce((sum, s) => sum + s.value, 0) / last6Months.length
-              : salesArray.reduce((sum, s) => sum + s.value, 0) / salesArray.length;
-            
-            let trend = 0;
-            if (salesArray.length >= 6) {
-              const recent = salesArray.slice(-3).reduce((sum, s) => sum + s.value, 0) / 3;
-              const older = salesArray.slice(-6, -3).reduce((sum, s) => sum + s.value, 0) / 3;
-              if (older > 0) {
-                trend = (recent - older) / older;
-              }
-            } else if (salesArray.length >= 2) {
-              const recent = salesArray.slice(-1)[0].value;
-              const older = salesArray[0].value;
-              if (older > 0) {
-                trend = (recent - older) / older / salesArray.length;
-              }
-            }
+            // Sum = total sales of cases in the observed period
+            const sum = salesArray.reduce((total, s) => total + s.value, 0);
+            // Count = number of months in the observed period
+            const count = salesArray.length;
+            // Average = Sum / Count
+            const avgSales = sum / count;
             
             marketPredictions.set(market, {
-              avgSales,
-              trend,
-              salesHistory: salesArray
+              avgSales
             });
           }
         }
-        
-        // Also use iDig sales data if available (aggregated totals) - primarily for USA
-        const historicalSalesValues = Object.entries(sales)
-          .flatMap(([year, months]) =>
-            Object.entries(months).map(([m, val]) => ({
-              year,
-              month: m,
-              value: val,
-            }))
-          )
-          .sort(
-            (a, b) =>
-              new Date(`${a.month} 1, ${a.year}`) - new Date(`${b.month} 1, ${b.year}`)
-          );
 
-        // Calculate overall trend from filtered sales data (last 6 months)
+        // Calculate overall average from filtered sales data
         const filteredSalesArray = Array.from(filteredSalesByPeriod.entries())
           .map(([key, value]) => {
             const [year, month] = key.split('_');
@@ -965,28 +945,12 @@ export default function Dashboard() {
             return a.year.localeCompare(b.year);
           });
 
-        // Calculate average from last 6 months of filtered sales
-        const last6MonthFilteredSales = filteredSalesArray.slice(-6);
-        const last6MonthAvg = last6MonthFilteredSales.length > 0
-          ? last6MonthFilteredSales.reduce((sum, s) => sum + s.value, 0) / last6MonthFilteredSales.length
-          : (historicalSalesValues.slice(-6).reduce((sum, s) => sum + s.value, 0) /
-              Math.max(1, Math.min(6, historicalSalesValues.length)) || 0);
-
-        // Calculate overall trend (growth rate) from filtered sales
-        let salesTrend = 0; // Default: no trend
-        if (filteredSalesArray.length >= 2) {
-          const recent = filteredSalesArray.slice(-3).reduce((sum, s) => sum + s.value, 0) / 3;
-          const older = filteredSalesArray.slice(-6, -3).reduce((sum, s) => sum + s.value, 0) / 3;
-          if (older > 0) {
-            salesTrend = (recent - older) / older; // Percentage change
-          }
-        } else if (historicalSalesValues.length >= 6) {
-          // Fallback to iDig data if filtered data insufficient
-          const recent = historicalSalesValues.slice(-3).reduce((sum, s) => sum + s.value, 0) / 3;
-          const older = historicalSalesValues.slice(-6, -3).reduce((sum, s) => sum + s.value, 0) / 3;
-          if (older > 0) {
-            salesTrend = (recent - older) / older;
-          }
+        // Overall average: Sum / Count
+        let overallAvgSales = 0;
+        if (filteredSalesArray.length > 0) {
+          const sum = filteredSalesArray.reduce((total, s) => total + s.value, 0);
+          const count = filteredSalesArray.length;
+          overallAvgSales = sum / count;
         }
 
         // ───────── Stock Float Projection ─────────
@@ -1224,26 +1188,22 @@ export default function Dashboard() {
           // Get market for current filter (or use item's market for market-specific predictions)
           const currentMarket = countryFilter || null;
           
-          // Calculate predicted sales for this period using market-specific data from depletion summary
+          // Calculate predicted sales for this period using SIMPLE AVERAGE formula
+          // Formula: Average = Sum / Count (Sum = total sales, Count = number of months)
+          // CRITICAL: Predictions must be calculated for ALL periods (historical and future) to factor into stock float
           let predictedSales = 0;
-          if (filters.viewMode === "historical") {
-            // Use filtered sales data first, fallback to iDig totals
-            const filteredKey = `${year}_${month}`;
-            predictedSales = filteredSalesByPeriod.get(filteredKey) || sales[year]?.[month] || 0;
-          } else {
-            // Use market-specific prediction if available, otherwise use overall
-            if (currentMarket && marketPredictions.has(currentMarket)) {
-              const marketPred = marketPredictions.get(currentMarket);
-              const monthsAhead = idx + 1;
-              const trendFactor = 1 + (marketPred.trend * monthsAhead * 0.1);
-              predictedSales = marketPred.avgSales * Math.max(0.5, trendFactor);
-            } else {
-              // Forecast based on overall trend analysis
-              const monthsAhead = idx + 1;
-              const trendFactor = 1 + (salesTrend * monthsAhead * 0.1);
-              predictedSales = last6MonthAvg * Math.max(0.5, trendFactor);
-            }
+      
+          // For forward-looking mode, use simple average (no trends)
+          // Priority 1: Use market-specific average if available
+          if (currentMarket && marketPredictions.has(currentMarket)) {
+            const marketPred = marketPredictions.get(currentMarket);
+            predictedSales = marketPred.avgSales;
+          } 
+          // Priority 2: Use overall average if market-specific not available
+          else {
+            predictedSales = overallAvgSales;
           }
+            // If no data available at all, predictions will be 0 (will result in stock float = stock + in-transit)
 
           // Get transit items for this specific month
           const monthKey = `${year}_${month}`;
@@ -1290,33 +1250,58 @@ export default function Dashboard() {
             // Get market for this item
             const itemMarket = (item.country || "").toLowerCase();
             
-            // Calculate wine-specific sales prediction using market-specific data if available
+            // CRITICAL: Calculate wine-specific sales prediction using SIMPLE AVERAGE
+            // Formula: Average = Sum / Count (no trends)
+            // This is essential for stock float calculation: Stock Float = Stock + In Transit - Predicted Sales
             let winePredictedSales = 0;
+            
+            // Priority 1: Use market-specific average for forward-looking periods
             if (filters.viewMode === "forward" && itemMarket && marketPredictions.has(itemMarket)) {
-              // Use market-specific prediction for this distributor/wine
               const marketPred = marketPredictions.get(itemMarket);
-              const monthsAhead = idx + 1;
-              const trendFactor = 1 + (marketPred.trend * monthsAhead * 0.1);
-              const marketPredictedSales = marketPred.avgSales * Math.max(0.5, trendFactor);
+              const marketPredictedSales = marketPred.avgSales; // Simple average, no trends
               
-              // Distribute proportionally to this wine within the market
+              // Distribute proportionally to this wine within the market based on stock float proportion
               const totalStockForMarket = monthStockFloatArray
                 .filter(i => (i.country || "").toLowerCase() === itemMarket)
                 .reduce((sum, i) => sum + i.totalStockFloat, 0);
-              const wineProportion = totalStockForMarket > 0 
-                ? item.totalStockFloat / totalStockForMarket 
-                : 1 / monthStockFloatArray.filter(i => (i.country || "").toLowerCase() === itemMarket).length;
-              winePredictedSales = marketPredictedSales * wineProportion;
-            } else {
-              // Fallback: distribute overall predicted sales proportionally
+              
+              if (totalStockForMarket > 0) {
+                const wineProportion = item.totalStockFloat / totalStockForMarket;
+                winePredictedSales = marketPredictedSales * wineProportion;
+              } else {
+                // Equal distribution if no stock data
+                const marketItemCount = monthStockFloatArray.filter(i => (i.country || "").toLowerCase() === itemMarket).length;
+                winePredictedSales = marketItemCount > 0 ? marketPredictedSales / marketItemCount : 0;
+              }
+            } 
+            // Priority 2: For historical mode, distribute actual sales proportionally
+            else if (filters.viewMode === "historical") {
+              // Distribute overall predicted sales (which is actual sales in historical mode) proportionally
               const totalStockForPeriod = monthStockFloatArray.reduce((sum, i) => sum + i.totalStockFloat, 0);
-              const wineProportion = totalStockForPeriod > 0 
-                ? item.totalStockFloat / totalStockForPeriod 
-                : 1 / monthStockFloatArray.length;
-              winePredictedSales = predictedSales * wineProportion;
+              if (totalStockForPeriod > 0) {
+                const wineProportion = item.totalStockFloat / totalStockForPeriod;
+                winePredictedSales = predictedSales * wineProportion;
+              } else {
+                // Equal distribution if no stock data
+                winePredictedSales = monthStockFloatArray.length > 0 ? predictedSales / monthStockFloatArray.length : 0;
+              }
+            }
+            // Priority 3: Fallback for forward mode without market-specific data
+            else {
+              // Distribute overall predicted sales (simple average) proportionally
+              const totalStockForPeriod = monthStockFloatArray.reduce((sum, i) => sum + i.totalStockFloat, 0);
+              if (totalStockForPeriod > 0) {
+                const wineProportion = item.totalStockFloat / totalStockForPeriod;
+                winePredictedSales = predictedSales * wineProportion;
+              } else {
+                // Equal distribution if no stock data
+                winePredictedSales = monthStockFloatArray.length > 0 ? predictedSales / monthStockFloatArray.length : 0;
+              }
             }
             
-            // Stock Float = Stock on Hand + In Transit - Predicted Sales
+            // CRITICAL: Stock Float calculation - predictions MUST be factored in
+            // Formula: Stock Float = Stock on Hand + In Transit - Predicted Sales
+            // This ensures future stock requirements account for expected sales
             const stockFloat = Math.max(0, item.totalStockFloat - winePredictedSales);
             
             return {
@@ -1325,9 +1310,9 @@ export default function Dashboard() {
               brand: item.brand,
               variety: item.variety,
               country: item.country,
-              stock: item.stock, // Stock on hand
+              stock: item.stock, // Stock on hand (currently using depletion data as proxy)
               inTransit: item.inTransit, // In-transit cases for this month
-              predictedSales: winePredictedSales,
+              predictedSales: winePredictedSales, // Predicted sales for this wine (CRITICAL for stock float)
               stockFloat: stockFloat // Stock on hand + in-transit - predicted sales
             };
           });
@@ -1350,31 +1335,40 @@ export default function Dashboard() {
         setStockFloatData(projection);
         // ───────── Forecast Accuracy ─────────
         // Calculate accuracy by comparing predicted vs actual sales
-        // Only calculate accuracy for periods where we have actual historical data
+        // IMPORTANT: For small samples, accuracy can appear artificially high
+        // Formula: Accuracy = 100 * (1 - |predicted - actual| / max(predicted, actual))
+        // This shows how close the prediction was relative to the magnitude of sales
         const accuracyData = [];
         
         for (const p of projection) {
           const { period, predictedSales } = p;
           
-          // Get actual sales from historical data - only use if we have real data
+          // Get actual sales from historical data - ONLY use depletion summary data (no iDig)
           const [month, year] = period.split(' ');
           const fullYear = '20' + year;
           
-          // Try to get actual sales from filtered sales data first (more accurate)
+          // Get actual sales from filtered sales data (depletion summary only)
           const periodKey = `${fullYear}_${month}`;
           let actualSales = filteredSalesByPeriod.get(periodKey);
           
-          // Fallback to iDig sales data if filtered data not available
-          if (!actualSales && sales[fullYear] && sales[fullYear][month]) {
-            actualSales = sales[fullYear][month];
+          // CRITICAL: For forward-looking periods, ALWAYS show predicted sales
+          // This is required for the function to work - predictions must be visible
+          if (filters.viewMode === "forward") {
+            accuracyData.push({
+              period,
+              actual: actualSales && actualSales > 0 ? Math.round(actualSales) : 0, // Show actuals if available
+              forecast: Math.round(predictedSales), // Predicted sales (REQUIRED for future periods)
+              accuracy: null, // Don't calculate accuracy for future periods without actuals
+            });
           }
-          
-          // Only calculate accuracy if we have actual historical data
-          // Don't generate fake data - skip periods without actuals
-          if (actualSales !== undefined && actualSales !== null && actualSales > 0 && predictedSales > 0) {
-            const accuracy = Math.round(
-              (1 - Math.abs(predictedSales - actualSales) / Math.max(predictedSales, actualSales, 1)) * 100
-            );
+          // For historical periods, only calculate accuracy if we have both actual and predicted data
+          else if (actualSales !== undefined && actualSales !== null && actualSales > 0 && predictedSales > 0) {
+            // Accuracy calculation: percentage of how close prediction was to actual
+            // Formula accounts for both over-prediction and under-prediction
+            // Note: With small samples, this can appear high if predictions are close
+            const maxValue = Math.max(predictedSales, actualSales, 1); // Prevent division by zero
+            const errorRatio = Math.abs(predictedSales - actualSales) / maxValue;
+            const accuracy = Math.round((1 - errorRatio) * 100);
             
             accuracyData.push({
               period,
@@ -1382,16 +1376,16 @@ export default function Dashboard() {
               forecast: Math.round(predictedSales),
               accuracy: Math.max(0, Math.min(100, accuracy)), // Clamp between 0-100
             });
-          } else if (filters.viewMode === "forward") {
-            // For forward predictions, show forecast only (no accuracy calculation without actuals)
+          }
+          // For historical periods without actuals, still show forecast if available
+          else if (predictedSales > 0) {
             accuracyData.push({
               period,
-              actual: 0, // No actual data yet
+              actual: 0, // No actual data
               forecast: Math.round(predictedSales),
-              accuracy: null, // Don't show accuracy for future periods without actuals
+              accuracy: null, // Can't calculate accuracy without actuals
             });
           }
-          // For historical periods without actuals, skip them entirely
         }
         
         setForecastAccuracyData(accuracyData);
