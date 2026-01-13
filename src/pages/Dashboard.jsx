@@ -97,16 +97,16 @@ export default function Dashboard() {
     try {
       const distributorRaw = localStorage.getItem("vc_distributor_stock_data");
       const exportsRaw = localStorage.getItem("vc_exports_data");
-      const salesRaw = localStorage.getItem("vc_sales_data");
       const cin7Raw = localStorage.getItem("vc_cin7_data");
       const distributorMetadataRaw = localStorage.getItem("vc_distributor_stock_metadata");
 
-      if (!distributorRaw || !exportsRaw || !salesRaw) return null;
+      // Only require distributor stock and exports data (no longer using sales/iDig data)
+      if (!distributorRaw || !exportsRaw) return null;
 
       return {
         distributorStock: JSON.parse(distributorRaw),
         exportsData: JSON.parse(exportsRaw),
-        sales: JSON.parse(salesRaw),
+        sales: {}, // No longer using iDig sales data, keeping for compatibility
         cin7: cin7Raw ? JSON.parse(cin7Raw) : [],
         distributorMetadata: distributorMetadataRaw ? JSON.parse(distributorMetadataRaw) : null
       };
@@ -134,6 +134,13 @@ export default function Dashboard() {
             setIsProcessing(false);
             return;
           }
+          
+          // Debug: Log data counts
+          console.log("Data loaded:", {
+            distributorStockCount: distributorStock.length,
+            exportsDataCount: exportsData.length,
+            currentFilters: filters
+          });
 
           const monthNames = [
             "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -146,7 +153,12 @@ export default function Dashboard() {
           const wineTypeFilter = filters.wineType === "all" ? null : filters.wineType.replace(/_/g, " ").toLowerCase();
           const wineTypeCode = filters.wineType === "all" ? null : filters.wineType.split("_")[0];
           const yearFilter = filters.year === "all" ? null : filters.year.toString();
-          console.log("yearFilter", yearFilter, "countryFilter", countryFilter, "distributorFilter", distributorFilter, "wineTypeFilter", wineTypeFilter, "wineTypeCode", wineTypeCode);
+          
+          // Debug: Check available countries in data
+          if (countryFilter) {
+            const availableCountries = [...new Set(distributorStock.map(r => (r.AdditionalAttribute2 || "").toLowerCase().trim()))].filter(c => c);
+            console.log("Available countries in data:", availableCountries, "Looking for:", countryFilter);
+          }
           // ───────── Filter Distributor Stock ─────────
           // Optimized filtering with early returns
           const filteredStock = [];
@@ -342,6 +354,9 @@ export default function Dashboard() {
             
             filteredStock.push(r);
           }
+          
+          // Debug: Log filtered results
+          console.log("Filtered stock count:", filteredStock.length);
 
           // ───────── Filter Exports ─────────
           // Only include "waiting to ship" and "in transit" orders (exclude "complete")
@@ -881,13 +896,23 @@ export default function Dashboard() {
         const salesByMarket = new Map(); // key: market, value: array of {year, month, value}
         const filteredSalesByPeriod = new Map(); // key: `${year}_${normalizedMonth}` (overall)
         
-        // Aggregate sales from filtered stock data (depletion summary) by market and period
+          // Aggregate sales from filtered stock data (depletion summary) by market and period
+        let salesDataCount = 0;
+        let missingFieldsCount = 0;
         for (let i = 0; i < filteredStock.length; i++) {
           const r = filteredStock[i];
           const rawMonth = r._month || "";
           const year = r._year || "";
           const salesValue = parseFloat(r.Available) || 0;
           const market = (r.AdditionalAttribute2 || "").toLowerCase().trim();
+          
+          // Debug: Track missing fields
+          if (!rawMonth || !year) {
+            missingFieldsCount++;
+            if (missingFieldsCount <= 5) { // Only log first 5 to avoid spam
+              console.log("Missing month/year field:", { rawMonth, year, market, available: salesValue });
+            }
+          }
           
           // Normalize month to consistent format (month names)
           const normalizedMonth = normalizeMonth(rawMonth);
@@ -903,8 +928,20 @@ export default function Dashboard() {
               salesByMarket.set(market, []);
             }
             salesByMarket.get(market).push({ year, month: normalizedMonth, value: salesValue });
+            salesDataCount++;
           }
         }
+        
+        if (missingFieldsCount > 0) {
+          console.warn(`Warning: ${missingFieldsCount} records missing _month or _year fields out of ${filteredStock.length} filtered records`);
+        }
+        
+        // Debug: Log sales aggregation results
+        console.log("Sales aggregation:", {
+          filteredSalesByPeriodSize: filteredSalesByPeriod.size,
+          salesByMarketSize: salesByMarket.size,
+          markets: Array.from(salesByMarket.keys())
+        });
         
         // Sort sales arrays by date for each market
         for (const [market, salesArray] of salesByMarket.entries()) {
@@ -1190,10 +1227,11 @@ export default function Dashboard() {
           
           // Calculate predicted sales for this period using SIMPLE AVERAGE formula
           // Formula: Average = Sum / Count (Sum = total sales, Count = number of months)
-          // CRITICAL: Predictions must be calculated for ALL periods (historical and future) to factor into stock float
+          // CRITICAL: Predictions must be calculated the SAME WAY for ALL periods (historical and future)
+          // Always use the average - don't use actual sales for historical periods
           let predictedSales = 0;
-      
-          // For forward-looking mode, use simple average (no trends)
+          
+          // Use simple average (no trends) for both historical and forward modes
           // Priority 1: Use market-specific average if available
           if (currentMarket && marketPredictions.has(currentMarket)) {
             const marketPred = marketPredictions.get(currentMarket);
@@ -1203,7 +1241,7 @@ export default function Dashboard() {
           else {
             predictedSales = overallAvgSales;
           }
-            // If no data available at all, predictions will be 0 (will result in stock float = stock + in-transit)
+          // If no data available at all, predictions will be 0 (will result in stock float = stock + in-transit)
 
           // Get transit items for this specific month
           const monthKey = `${year}_${month}`;
@@ -1252,11 +1290,12 @@ export default function Dashboard() {
             
             // CRITICAL: Calculate wine-specific sales prediction using SIMPLE AVERAGE
             // Formula: Average = Sum / Count (no trends)
+            // Use the SAME calculation for both historical and forward modes
             // This is essential for stock float calculation: Stock Float = Stock + In Transit - Predicted Sales
             let winePredictedSales = 0;
             
-            // Priority 1: Use market-specific average for forward-looking periods
-            if (filters.viewMode === "forward" && itemMarket && marketPredictions.has(itemMarket)) {
+            // Priority 1: Use market-specific average if available (for both historical and forward modes)
+            if (itemMarket && marketPredictions.has(itemMarket)) {
               const marketPred = marketPredictions.get(itemMarket);
               const marketPredictedSales = marketPred.avgSales; // Simple average, no trends
               
@@ -1274,19 +1313,7 @@ export default function Dashboard() {
                 winePredictedSales = marketItemCount > 0 ? marketPredictedSales / marketItemCount : 0;
               }
             } 
-            // Priority 2: For historical mode, distribute actual sales proportionally
-            else if (filters.viewMode === "historical") {
-              // Distribute overall predicted sales (which is actual sales in historical mode) proportionally
-              const totalStockForPeriod = monthStockFloatArray.reduce((sum, i) => sum + i.totalStockFloat, 0);
-              if (totalStockForPeriod > 0) {
-                const wineProportion = item.totalStockFloat / totalStockForPeriod;
-                winePredictedSales = predictedSales * wineProportion;
-              } else {
-                // Equal distribution if no stock data
-                winePredictedSales = monthStockFloatArray.length > 0 ? predictedSales / monthStockFloatArray.length : 0;
-              }
-            }
-            // Priority 3: Fallback for forward mode without market-specific data
+            // Priority 2: Fallback - distribute overall predicted sales (simple average) proportionally
             else {
               // Distribute overall predicted sales (simple average) proportionally
               const totalStockForPeriod = monthStockFloatArray.reduce((sum, i) => sum + i.totalStockFloat, 0);
@@ -1332,6 +1359,14 @@ export default function Dashboard() {
             distributorProjections: distributorProjections // Per-distributor breakdown
           };
         });
+        
+        // Debug: Log projection results
+        console.log("Projection results:", {
+          projectionLength: projection.length,
+          firstProjection: projection[0],
+          totalStockFloat: projection.reduce((sum, p) => sum + (p.stockFloat || 0), 0)
+        });
+        
         setStockFloatData(projection);
         // ───────── Forecast Accuracy ─────────
         // Calculate accuracy by comparing predicted vs actual sales
