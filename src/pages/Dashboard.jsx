@@ -952,15 +952,54 @@ export default function Dashboard() {
           });
         }
         
-        // Calculate simple average per market: Average = Sum / Count
-        // Sum = total sales in observed period, Count = number of months
+        // Calculate predicted sales: Sum of actual sales in filtered periods / Number of months in filter
+        // CRITICAL: This must use ONLY the actual sales data from the periods in the date range filter
+        // The same predicted value will be used for ALL months (historical and future)
+        // This value changes when the filter changes because the sum and count change
+        
+        // Get the filtered periods from monthsToDisplay (the months shown in the filter)
+        const filteredPeriodKeys = new Set(monthsToDisplay.map(({ month, year }) => `${year}_${month}`));
+        
+        // Calculate predicted sales from actual sales in filteredSalesByPeriod
+        // Only include periods that are in the date range filter
+        const filteredSalesArray = Array.from(filteredSalesByPeriod.entries())
+          .map(([key, value]) => {
+            const [year, month] = key.split('_');
+            return { year, month, value, periodKey: key };
+          })
+          .filter(({ periodKey }) => filteredPeriodKeys.has(periodKey)) // Only include filtered periods
+          .sort((a, b) => {
+            const monthOrder = monthNames.indexOf(a.month) - monthNames.indexOf(b.month);
+            if (monthOrder !== 0) return monthOrder;
+            return a.year.localeCompare(b.year);
+          });
+
+        // Predicted sales = Sum of actual sales / Count of months
+        // This is the SAME value used for ALL months in the projection
+        let predictedSales = 0;
+        if (filteredSalesArray.length > 0) {
+          // Sum = total actual sales from all filtered periods
+          const sum = filteredSalesArray.reduce((total, s) => total + s.value, 0);
+          // Count = number of months in the filtered period
+          const count = filteredSalesArray.length;
+          // Average = Sum / Count (this is the predicted sales for ALL months)
+          predictedSales = sum / count;
+        }
+        
+        // Market-specific predictions (for wine-level distribution) - also use filtered periods only
         const marketPredictions = new Map(); // key: market, value: {avgSales}
         for (const [market, salesArray] of salesByMarket.entries()) {
-          if (salesArray.length > 0) {
-            // Sum = total sales of cases in the observed period
-            const sum = salesArray.reduce((total, s) => total + s.value, 0);
-            // Count = number of months in the observed period
-            const count = salesArray.length;
+          // Filter to only include sales from periods in the date range filter
+          const filteredMarketSales = salesArray.filter(s => {
+            const periodKey = `${s.year}_${s.month}`;
+            return filteredPeriodKeys.has(periodKey);
+          });
+          
+          if (filteredMarketSales.length > 0) {
+            // Sum = total sales of cases in the observed period (only filtered periods)
+            const sum = filteredMarketSales.reduce((total, s) => total + s.value, 0);
+            // Count = number of months in the observed period (only filtered periods)
+            const count = filteredMarketSales.length;
             // Average = Sum / Count
             const avgSales = sum / count;
             
@@ -968,26 +1007,6 @@ export default function Dashboard() {
               avgSales
             });
           }
-        }
-
-        // Calculate overall average from filtered sales data
-        const filteredSalesArray = Array.from(filteredSalesByPeriod.entries())
-          .map(([key, value]) => {
-            const [year, month] = key.split('_');
-            return { year, month, value };
-          })
-          .sort((a, b) => {
-            const monthOrder = monthNames.indexOf(a.month) - monthNames.indexOf(b.month);
-            if (monthOrder !== 0) return monthOrder;
-            return a.year.localeCompare(b.year);
-          });
-
-        // Overall average: Sum / Count
-        let overallAvgSales = 0;
-        if (filteredSalesArray.length > 0) {
-          const sum = filteredSalesArray.reduce((total, s) => total + s.value, 0);
-          const count = filteredSalesArray.length;
-          overallAvgSales = sum / count;
         }
 
         // ───────── Stock Float Projection ─────────
@@ -1221,27 +1240,10 @@ export default function Dashboard() {
           }
         }
         // Calculate stock float per distributor and wine type
+        // CRITICAL: Use the SAME predictedSales value for ALL months (calculated above from filtered periods)
         const projection = monthsToDisplay.map(({ month, year }, idx) => {
-          // Get market for current filter (or use item's market for market-specific predictions)
-          const currentMarket = countryFilter || null;
-          
-          // Calculate predicted sales for this period using SIMPLE AVERAGE formula
-          // Formula: Average = Sum / Count (Sum = total sales, Count = number of months)
-          // CRITICAL: Predictions must be calculated the SAME WAY for ALL periods (historical and future)
-          // Always use the average - don't use actual sales for historical periods
-          let predictedSales = 0;
-          
-          // Use simple average (no trends) for both historical and forward modes
-          // Priority 1: Use market-specific average if available
-          if (currentMarket && marketPredictions.has(currentMarket)) {
-            const marketPred = marketPredictions.get(currentMarket);
-            predictedSales = marketPred.avgSales;
-          } 
-          // Priority 2: Use overall average if market-specific not available
-          else {
-            predictedSales = overallAvgSales;
-          }
-          // If no data available at all, predictions will be 0 (will result in stock float = stock + in-transit)
+          // Use the predicted sales calculated from actual sales in filtered periods
+          // This value is the same for all months: Sum of actual sales / Count of months in filter
 
           // Get transit items for this specific month
           const monthKey = `${year}_${month}`;
