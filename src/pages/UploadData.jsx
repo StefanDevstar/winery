@@ -302,6 +302,10 @@ export default function UploadDataPage() {
         // ignore if CustomEvent not supported
       }
 
+      // Save upload timestamp to localStorage
+      const uploadTimestamp = new Date().toISOString();
+      localStorage.setItem('vc_last_upload_timestamp', uploadTimestamp);
+
       const successMessage = (type === 'distributor_stock' || type === 'exports' || type === 'stock_on_hand' || type === 'sales') && isExcel
         ? `${totalRecords} records from ${sheetCount} sheet(s) imported successfully.`
         : `${totalRecords} records imported successfully.`;

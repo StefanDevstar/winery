@@ -53,7 +53,7 @@ export default function FilterBar({ filters, onFilterChange }) {
       if (distributorStock.length === 0) {
         return { countries: [], distributors: [], wineTypes: [] };
       }
-      
+
       // Extract countries from metadata sheet names (this is the source of truth)
       // Sheet names directly map to countries: NZL → nzl, AU-B → au-b, USA → usa, IRE → ire
       const countrySet = new Set();
@@ -331,10 +331,10 @@ export default function FilterBar({ filters, onFilterChange }) {
               ) : (
                 // Fallback options if no data is available
                 <>
-                  <SelectItem value="usa">USA</SelectItem>
+              <SelectItem value="usa">USA</SelectItem>
                   <SelectItem value="au-b">AU-B</SelectItem>
                   <SelectItem value="au-c">AU-C</SelectItem>
-                  <SelectItem value="nzl">New Zealand</SelectItem>
+              <SelectItem value="nzl">New Zealand</SelectItem>
                   <SelectItem value="ire">Ireland</SelectItem>
                 </>
               )}
@@ -405,9 +405,9 @@ export default function FilterBar({ filters, onFilterChange }) {
         {viewMode === "historical" ? (
           <div className="flex flex-col gap-3 sm:gap-4">
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
-              <div className="flex items-center gap-2 text-slate-600">
-                <CalendarIcon className="w-4 h-4" />
-                <span className="text-xs sm:text-sm font-medium">Historical Period:</span>
+            <div className="flex items-center gap-2 text-slate-600">
+              <CalendarIcon className="w-4 h-4" />
+              <span className="text-xs sm:text-sm font-medium">Historical Period:</span>
               </div>
               {/* Last Update Date */}
               {(() => {
