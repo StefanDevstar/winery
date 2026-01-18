@@ -465,7 +465,7 @@ export default function UploadDataPage() {
           />
           <DataUploadCard
             title="Distributors Stock on Hand"
-            description="Current Distributors Stock on Hand"
+            description="Current Distributors Stock on Hand(Book1.xlsx)"
             Icon={Users}
             onFileUpload={(file) => handleFileUpload(file, 'stock_on_hand_distributors')}
             processingStatus={statuses.stock_on_hand_distributors}

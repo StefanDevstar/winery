@@ -1675,10 +1675,60 @@ export function normalizeDistributorStockOnHandData(records, sheetName = '') {
     // Parse SKU to extract components
     const skuParts = parseProductSKU(sku || product);
     
+    // Extract wine type code from wineType field (e.g., "JULES TAYLOR SAUVIGNON BLANC" -> "SAB")
+    // Wine name mapping (reverse lookup: full name -> code) - matches FilterBar.jsx wineNameMap
+    const wineNameMap = {
+      'Sauvignon Blanc': 'SAB',
+      'Pinot Noir': 'PIN',
+      'Chardonnay': 'CHR',
+      'Rose': 'ROS',
+      'Rosé': 'ROS', // Include accented version
+      'Pinot Gris': 'PIG',
+      'Pinot Grigio': 'PIG', // Alternative name
+      'Gruner Veltliner': 'GRU',
+      'Gruner': 'GRU', // Short form
+      'Late Harvest Sauvignon': 'LHS',
+      'Riesling': 'RIESLING'
+    };
+    
+    // Extract wine type code from wineType field
+    let wineTypeCode = '';
+    const wineTypeUpper = wineType.toUpperCase();
+    
+    // Try to find wine type in wineType field (case-insensitive search)
+    for (const [fullName, code] of Object.entries(wineNameMap)) {
+      const fullNameUpper = fullName.toUpperCase();
+      // Check if wineType contains the wine type name
+      if (wineTypeUpper.includes(fullNameUpper)) {
+        wineTypeCode = code;
+        break;
+      }
+    }
+    
+    // If not found, try to extract from variety code in skuParts
+    if (!wineTypeCode && skuParts.varietyCode) {
+      const varietyCodeUpper = skuParts.varietyCode.toUpperCase();
+      // Direct code match
+      if (['SAB', 'PIN', 'CHR', 'ROS', 'PIG', 'GRU', 'LHS', 'RIESLING'].includes(varietyCodeUpper)) {
+        wineTypeCode = varietyCodeUpper;
+      }
+    }
+    
     // Extract wine code from SKU or product
     const wineCode = skuParts.fullSKU || 
                     (sku ? sku.toUpperCase().replace(/\s+/g, '_') : '') ||
                     (product ? product.split(' ').slice(0, 3).join('_').toUpperCase().replace(/\s+/g, '_') : '');
+    
+    // Build AdditionalAttribute3 with ONLY wine type code (no prefix)
+    // Format: Just the wine type code (SAB, PIN, ROS, PIG, etc.)
+    let additionalAttribute3 = '';
+    if (wineTypeCode) {
+      // Use only the wine type code without any prefix
+      additionalAttribute3 = wineTypeCode;
+    } else {
+      // Fallback: use existing wine code if no wine type code found
+      additionalAttribute3 = wineCode || `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase().replace(/\s+/g, '_');
+    }
     
     normalized.push({
       // Distributor information - use sheet name as distributor
@@ -1695,7 +1745,7 @@ export function normalizeDistributorStockOnHandData(records, sheetName = '') {
       BrandCode: skuParts.brandCode,
       Vintage: skuParts.vintage,
       Variety: skuParts.variety,
-      VarietyCode: skuParts.varietyCode,
+      VarietyCode: skuParts.varietyCode || wineTypeCode, // Use extracted wine type code
       Market: normalizeCountryCode(country || sheetName), // Normalized country code
       MarketCode: skuParts.marketCode,
       
@@ -1705,7 +1755,7 @@ export function normalizeDistributorStockOnHandData(records, sheetName = '') {
       
       // Additional fields for Dashboard compatibility
       AdditionalAttribute2: normalizeCountryCode(country || sheetName), // Normalized country code
-      AdditionalAttribute3: wineCode || `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase().replace(/\s+/g, '_'),
+      AdditionalAttribute3: additionalAttribute3 || `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase().replace(/\s+/g, '_'),
       
       _sheetName: sheetName,
       _originalData: row

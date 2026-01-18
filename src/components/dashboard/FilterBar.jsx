@@ -226,10 +226,14 @@ export default function FilterBar({ filters, onFilterChange }) {
             checkAndAddWineType('CHR', 'Chardonnay');
           } else if (lowerName.includes('pinot gris') || lowerName.includes('pinot grigio')) {
             checkAndAddWineType('PIG', 'Pinot Gris');
+          } else if (lowerName.includes('rose') || lowerName.includes('rosé')) {
+            checkAndAddWineType('ROS', 'Rose');
+          } else if (lowerName.includes('gruner veltliner') || lowerName.includes('gruner')) {
+            checkAndAddWineType('GRU', 'Gruner Veltliner');
+          } else if (lowerName.includes('late harvest sauvignon') || lowerName.includes('late harvest')) {
+            checkAndAddWineType('LHS', 'Late Harvest Sauvignon');
           } else if (lowerName.includes('riesling')) {
             checkAndAddWineType('RIESLING', 'Riesling');
-          } else if (lowerName.includes('rose')) {
-            checkAndAddWineType('ROS', 'Rose');
           }
         }
         
@@ -243,10 +247,14 @@ export default function FilterBar({ filters, onFilterChange }) {
             checkAndAddWineType('CHR', 'Chardonnay');
           } else if (lowerVariety.includes('pinot gris') || lowerVariety.includes('pinot grigio')) {
             checkAndAddWineType('PIG', 'Pinot Gris');
+          } else if (lowerVariety.includes('rose') || lowerVariety.includes('rosé')) {
+            checkAndAddWineType('ROS', 'Rose');
+          } else if (lowerVariety.includes('gruner veltliner') || lowerVariety.includes('gruner')) {
+            checkAndAddWineType('GRU', 'Gruner Veltliner');
+          } else if (lowerVariety.includes('late harvest sauvignon') || lowerVariety.includes('late harvest')) {
+            checkAndAddWineType('LHS', 'Late Harvest Sauvignon');
           } else if (lowerVariety.includes('riesling')) {
             checkAndAddWineType('RIESLING', 'Riesling');
-          } else if (lowerVariety.includes('rose')) {
-            checkAndAddWineType('ROS', 'Rose');
           }
         }
       });
@@ -367,7 +375,6 @@ export default function FilterBar({ filters, onFilterChange }) {
                   <SelectItem value="sab">Sauvignon Blanc</SelectItem>
                   <SelectItem value="pin">Pinot Noir</SelectItem>
                   <SelectItem value="chardonnay">Chardonnay</SelectItem>
-                  <SelectItem value="riesling">Riesling</SelectItem>
                   <SelectItem value="pig">Pinot Gris</SelectItem>
                 </>
               )}
