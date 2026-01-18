@@ -1856,13 +1856,13 @@ export default function Dashboard() {
         
         // ───────── Forecast Accuracy ─────────
         // Calculate accuracy by comparing predicted vs actual sales
-        // IMPORTANT: For small samples, accuracy can appear artificially high
+        // IMPORTANT: Use actual sales from filteredSalesByPeriod and predictedSales (constant from filter)
         // Formula: Accuracy = 100 * (1 - |predicted - actual| / max(predicted, actual))
         // This shows how close the prediction was relative to the magnitude of sales
         const accuracyData = [];
         
         for (const p of projection) {
-          const { period, predictedSales } = p;
+          const { period } = p;
           
           // Get actual sales from historical data - ONLY use depletion summary data (no iDig)
           const [month, year] = period.split(' ');
@@ -1870,40 +1870,51 @@ export default function Dashboard() {
           
           // Get actual sales from filtered sales data (depletion summary only)
           const periodKey = `${fullYear}_${month}`;
-          let actualSales = filteredSalesByPeriod.get(periodKey);
+          let actualSales = filteredSalesByPeriod.get(periodKey) || 0;
           
-          // CRITICAL: For forward-looking periods, ALWAYS show predicted sales
-          // This is required for the function to work - predictions must be visible
-          if (filters.viewMode === "forward") {
+          // CRITICAL: Use the constant predictedSales value (calculated from filtered date range)
+          // This is the same value used for all months in the projection
+          const forecastValue = predictedSales; // Constant predicted sales from filter
+          
+          // Determine if this is a historical or future period
+          const periodYear = parseInt(fullYear);
+          const periodMonthIndex = monthNames.indexOf(month);
+          const stockFloatCurrentDate = new Date();
+          const stockFloatCurrentYear = stockFloatCurrentDate.getFullYear();
+          const stockFloatCurrentMonth = stockFloatCurrentDate.getMonth();
+          const isHistorical = periodYear < stockFloatCurrentYear || 
+                              (periodYear === stockFloatCurrentYear && periodMonthIndex < stockFloatCurrentMonth);
+          
+          // For forward-looking periods, show predicted sales (forecast) and actual if available
+          if (!isHistorical || filters.viewMode === "forward") {
             accuracyData.push({
               period,
-              actual: actualSales && actualSales > 0 ? Math.round(actualSales) : 0, // Show actuals if available
-              forecast: Math.round(predictedSales), // Predicted sales (REQUIRED for future periods)
+              actual: actualSales > 0 ? Math.round(actualSales) : 0, // Show actuals if available
+              forecast: Math.round(forecastValue), // Predicted sales (constant from filter)
               accuracy: null, // Don't calculate accuracy for future periods without actuals
             });
           }
-          // For historical periods, only calculate accuracy if we have both actual and predicted data
-          else if (actualSales !== undefined && actualSales !== null && actualSales > 0 && predictedSales > 0) {
+          // For historical periods, calculate accuracy if we have both actual and predicted data
+          else if (actualSales > 0 && forecastValue > 0) {
             // Accuracy calculation: percentage of how close prediction was to actual
             // Formula accounts for both over-prediction and under-prediction
-            // Note: With small samples, this can appear high if predictions are close
-            const maxValue = Math.max(predictedSales, actualSales, 1); // Prevent division by zero
-            const errorRatio = Math.abs(predictedSales - actualSales) / maxValue;
+            const maxValue = Math.max(forecastValue, actualSales, 1); // Prevent division by zero
+            const errorRatio = Math.abs(forecastValue - actualSales) / maxValue;
             const accuracy = Math.round((1 - errorRatio) * 100);
             
             accuracyData.push({
               period,
-              actual: Math.round(actualSales),
-              forecast: Math.round(predictedSales),
+              actual: Math.round(actualSales), // Actual sales from depletion summary
+              forecast: Math.round(forecastValue), // Predicted sales (constant from filter)
               accuracy: Math.max(0, Math.min(100, accuracy)), // Clamp between 0-100
             });
           }
           // For historical periods without actuals, still show forecast if available
-          else if (predictedSales > 0) {
+          else if (forecastValue > 0) {
             accuracyData.push({
               period,
               actual: 0, // No actual data
-              forecast: Math.round(predictedSales),
+              forecast: Math.round(forecastValue), // Predicted sales (constant from filter)
               accuracy: null, // Can't calculate accuracy without actuals
             });
           }
