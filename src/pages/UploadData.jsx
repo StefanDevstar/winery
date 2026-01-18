@@ -24,18 +24,18 @@ import {
   parseCSVWithPapa, 
   parseExportsCSV, 
   parseExcel, 
-  normalizeDistributorStockData,
+  normalizeSalesData,
   normalizeExportsData,
-  normalizeStockOnHandData,
-  normalizeIdigSalesData
+  normalizeWarehouseStockData,
+  normalizeDistributorStockOnHandData,
 } from '@/lib/utils';
 
 export default function UploadDataPage() {
   const [statuses, setStatuses] = useState({
     sales: { status: 'idle', message: '', progress: 0 },
     exports: { status: 'idle', message: '', progress: 0 },
-    stock_on_hand: { status: 'idle', message: '', progress: 0 },
-    distributor_stock: { status: 'idle', message: '', progress: 0 }
+    stock_on_hand_distributors: { status: 'idle', message: '', progress: 0 },
+    warehouse_stock: { status: 'idle', message: '', progress: 0 }
   });
   const [globalError, setGlobalError] = useState(null);
   const [globalSuccess, setGlobalSuccess] = useState(null);
@@ -56,7 +56,7 @@ export default function UploadDataPage() {
     
     // Accept Excel files for: distributor_stock, exports, stock_on_hand, sales (idig)
     // Accept CSV files for: exports, sales (idig), cin7
-    const excelTypes = ['distributor_stock', 'exports', 'stock_on_hand', 'sales'];
+    const excelTypes = ['warehouse_stock', 'exports', 'stock_on_hand_distributors', 'sales'];
     
     if (excelTypes.includes(type)) {
       if (!isExcel && !isCsv) {
@@ -78,7 +78,7 @@ export default function UploadDataPage() {
       let totalRecords = 0;
       let sheetCount = 0;
       
-      if (isExcel && (type === 'distributor_stock' || type === 'exports' || type === 'stock_on_hand' || type === 'sales')) {
+      if (isExcel && (type === 'warehouse_stock' || type === 'exports' || type === 'stock_on_hand_distributors' || type === 'sales')) {
         // Handle Excel file with multiple sheets
         updateStatus(type, 'processing', 'Reading Excel file...', 30);
         const arrayBuffer = await file.arrayBuffer();
@@ -100,21 +100,35 @@ export default function UploadDataPage() {
         
         updateStatus(type, 'processing', 'Normalizing sheet data...', 60);
         
-        if (type === 'distributor_stock') {
-          // Handle distributor stock
+        if (type === 'sales') {
+          // Handle sales/depletion summary data (uses normalizeDistributorStockData)
           Object.keys(sheetsData).forEach((sheetName) => {
             const sheetRecords = sheetsData[sheetName];
             if (sheetRecords.length === 0) return;
             
-            const normalizedRecords = normalizeDistributorStockData(sheetRecords, sheetName);
-            const sheetStorageKey = `vc_distributor_stock_data_${sheetName}`;
+            const normalizedRecords = normalizeSalesData(sheetRecords, sheetName);
+            const sheetStorageKey = `vc_sales_data_${sheetName}`;
             localStorage.setItem(sheetStorageKey, JSON.stringify(normalizedRecords));
             
             sheetMetadata.sheetNames.push(sheetName);
             sheetMetadata.sheetCounts[sheetName] = normalizedRecords.length;
             allNormalizedRecords.push(...normalizedRecords);
           });
-          localStorage.setItem('vc_distributor_stock_metadata', JSON.stringify(sheetMetadata));
+          localStorage.setItem('vc_sales_metadata', JSON.stringify(sheetMetadata));
+          // Try to save combined data, but catch quota errors
+          try {
+            const combinedDataString = JSON.stringify(allNormalizedRecords);
+            // Remove old combined data first to free space
+            localStorage.removeItem('vc_sales_data');
+            // localStorage.setItem('vc_sales_data', combinedDataString);
+          } catch (e) {
+            if (e.name === 'QuotaExceededError' || e.code === 22) {
+              console.warn('Combined sales data too large for localStorage. Will aggregate from individual sheets.');
+              localStorage.removeItem('vc_sales_data');
+            } else {
+              throw e;
+            }
+          }
           records = allNormalizedRecords;
           totalRecords = allNormalizedRecords.length;
         } else if (type === 'exports') {
@@ -132,37 +146,103 @@ export default function UploadDataPage() {
             allNormalizedRecords.push(...normalizedRecords);
           });
           localStorage.setItem('vc_exports_metadata', JSON.stringify(sheetMetadata));
+          // Try to save combined data, but catch quota errors
+          try {
+            const combinedDataString = JSON.stringify(allNormalizedRecords);
+            // Remove old combined data first to free space
+            localStorage.removeItem('vc_exports_data');
+            localStorage.setItem('vc_exports_data', combinedDataString);
+          } catch (e) {
+            if (e.name === 'QuotaExceededError' || e.code === 22) {
+              console.warn('Combined exports data too large for localStorage. Will aggregate from individual sheets.');
+              localStorage.removeItem('vc_exports_data');
+            } else {
+              throw e;
+            }
+          }
           records = allNormalizedRecords;
           totalRecords = allNormalizedRecords.length;
-        } else if (type === 'stock_on_hand') {
-          // Handle stock on hand (cin7)
+        } else if (type === 'warehouse_stock') {
+          // Handle warehouse stock on hand (winery stock)
           Object.keys(sheetsData).forEach((sheetName) => {
             const sheetRecords = sheetsData[sheetName];
             if (sheetRecords.length === 0) return;
             
-            const normalizedRecords = normalizeStockOnHandData(sheetRecords, sheetName);
-            const sheetStorageKey = `vc_cin7_data_${sheetName}`;
+            const normalizedRecords = normalizeWarehouseStockData(sheetRecords, sheetName);
+            const sheetStorageKey = `vc_warehouse_stock_data_${sheetName}`;
             localStorage.setItem(sheetStorageKey, JSON.stringify(normalizedRecords));
             
             sheetMetadata.sheetNames.push(sheetName);
             sheetMetadata.sheetCounts[sheetName] = normalizedRecords.length;
             allNormalizedRecords.push(...normalizedRecords);
           });
-          localStorage.setItem('vc_cin7_metadata', JSON.stringify(sheetMetadata));
+          localStorage.setItem('vc_warehouse_stock_metadata', JSON.stringify(sheetMetadata));
+          // Try to save combined data, but catch quota errors
+          try {
+            const combinedDataString = JSON.stringify(allNormalizedRecords);
+            // Remove old combined data first to free space
+            localStorage.removeItem('vc_warehouse_stock_data');
+            localStorage.setItem('vc_warehouse_stock_data', combinedDataString);
+          } catch (e) {
+            if (e.name === 'QuotaExceededError' || e.code === 22) {
+              console.warn('Combined warehouse stock data too large for localStorage. Will aggregate from individual sheets.');
+              localStorage.removeItem('vc_warehouse_stock_data');
+            } else {
+              throw e;
+            }
+          }
           records = allNormalizedRecords;
           totalRecords = allNormalizedRecords.length;
-        } else if (type === 'sales') {
-          // Handle iDig sales data - special format
-          const normalizedData = normalizeIdigSalesData(sheetsData);
+        } else if (type === 'stock_on_hand_distributors') {
+          // Handle distributor stock on hand
           Object.keys(sheetsData).forEach((sheetName) => {
-            const sheetStorageKey = `vc_sales_data_${sheetName}`;
-            localStorage.setItem(sheetStorageKey, JSON.stringify(sheetsData[sheetName]));
+            const sheetRecords = sheetsData[sheetName];
+            if (sheetRecords.length === 0) return;
+            
+            const normalizedRecords = normalizeDistributorStockOnHandData(sheetRecords, sheetName);
+            const sheetStorageKey = `vc_distributor_stock_on_hand_data_${sheetName}`;
+            localStorage.setItem(sheetStorageKey, JSON.stringify(normalizedRecords));
+            
             sheetMetadata.sheetNames.push(sheetName);
-            sheetMetadata.sheetCounts[sheetName] = sheetsData[sheetName].length;
+            sheetMetadata.sheetCounts[sheetName] = normalizedRecords.length;
+            allNormalizedRecords.push(...normalizedRecords);
           });
-          localStorage.setItem('vc_sales_metadata', JSON.stringify(sheetMetadata));
-          records = normalizedData.totalsByYear; // Use the same format as CSV parser
-          totalRecords = Object.keys(normalizedData.totalsByYear).length;
+          localStorage.setItem('vc_distributor_stock_on_hand_metadata', JSON.stringify(sheetMetadata));
+          // Try to save combined data, but catch quota errors
+          // Note: Combined data may be too large for localStorage, so we'll aggregate on-demand in Dashboard
+          try {
+            const combinedDataString = JSON.stringify(allNormalizedRecords);
+            const dataSizeMB = (combinedDataString.length * 2) / (1024 * 1024); // Approximate size in MB (UTF-16 encoding)
+            console.log(`Distributor stock on hand - Records: ${allNormalizedRecords.length}, Size: ${dataSizeMB.toFixed(2)} MB`);
+            
+            // Check localStorage usage before saving
+            let totalSize = 0;
+            for (let key in localStorage) {
+              if (localStorage.hasOwnProperty(key)) {
+                totalSize += localStorage[key].length + key.length;
+              }
+            }
+            const totalSizeMB = (totalSize * 2) / (1024 * 1024);
+            console.log(`Current localStorage usage: ${totalSizeMB.toFixed(2)} MB`);
+            
+            // Try to free up space by removing old combined data first
+            localStorage.removeItem('vc_distributor_stock_on_hand_data');
+            
+            localStorage.setItem('vc_distributor_stock_on_hand_data', combinedDataString);
+            console.log('Successfully saved combined distributor stock on hand data');
+          } catch (e) {
+            if (e.name === 'QuotaExceededError' || e.code === 22) {
+              console.warn('Combined distributor stock on hand data too large for localStorage. Will aggregate from individual sheets.');
+              // Remove the combined key if it exists to free space
+              localStorage.removeItem('vc_distributor_stock_on_hand_data');
+              // Show user-friendly message
+              updateStatus(type, 'processing', `Saved ${totalRecords} records across ${sheetCount} sheets. Combined data too large - will aggregate on demand.`, 90);
+            } else {
+              throw e;
+            }
+          }
+          records = allNormalizedRecords;
+          totalRecords = allNormalizedRecords.length;
         }
         
         updateStatus(type, 'processing', `Processed ${sheetCount} sheet(s)...`, 70);
@@ -194,13 +274,19 @@ export default function UploadDataPage() {
       // Persist to localStorage under different keys depending on type
       const keyMap = {
         cin7: 'vc_cin7_data',
-        stock_on_hand: 'vc_cin7_data', // stock_on_hand uses same key as cin7
+        stock_on_hand: 'vc_cin7_data', // stock_on_hand uses same key as cin7 (legacy)
+        warehouse_stock: 'vc_warehouse_stock_data',
+        stock_on_hand_distributors: 'vc_distributor_stock_on_hand_data',
         exports: 'vc_exports_data',
         sales: 'vc_sales_data',
-        distributor_stock: 'vc_distributor_stock_data'
+        distributor_stock: 'vc_distributor_stock_data' // This is depletion summary (sales data)
       };
       const storageKey = keyMap[type] || `vc_upload_${type}`;
-      localStorage.setItem(storageKey, JSON.stringify(records));
+      // For CSV files, save to combined key (Excel files already saved combined data above)
+      if (!isExcel) {
+        localStorage.setItem(storageKey, JSON.stringify(records));
+      }
+      // Note: For Excel files, combined data is already saved above in the type-specific handlers
 
       // Notify other parts of app that new data is available
       try {
@@ -233,6 +319,9 @@ export default function UploadDataPage() {
 
   const handleRefresh = async () => {
     try {
+      // Clear all localStorage data
+      localStorage.clear();
+      
       // Delete all records from relevant entities
       setGlobalError(null);
       setGlobalSuccess(null);
@@ -245,7 +334,19 @@ export default function UploadDataPage() {
         distributor_stock: { status: 'idle', message: '', progress: 0 }
       });
 
-      setGlobalSuccess('Page refreshed. Ready for new data uploads.');
+      // Dispatch event to notify dashboard that data was cleared
+      try {
+        window.dispatchEvent(new CustomEvent('vc:data:uploaded', { 
+          detail: { 
+            type: 'refresh',
+            cleared: true
+          } 
+        }));
+      } catch (e) {
+        // ignore if CustomEvent not supported
+      }
+
+      setGlobalSuccess('All data cleared. Ready for new data uploads.');
     } catch (error) {
       setGlobalError('Failed to refresh: ' + error.message);
     }
@@ -347,10 +448,10 @@ export default function UploadDataPage() {
 
           <DataUploadCard
             title="Stock on Hand Live Report"
-            description="Current inventory levels from CIN7"
+            description="Current Warehouse Stock on Hand"
             Icon={Package}
-            onFileUpload={(file) => handleFileUpload(file, 'stock_on_hand')}
-            processingStatus={statuses.stock_on_hand}
+            onFileUpload={(file) => handleFileUpload(file, 'warehouse_stock')}
+            processingStatus={statuses.warehouse_stock}
             acceptFileTypes=".xlsx,.xls,.csv"
           />
 
@@ -358,8 +459,16 @@ export default function UploadDataPage() {
             title="Depletion Summary"
             description="Stock levels at distributor locations"
             Icon={Users}
-            onFileUpload={(file) => handleFileUpload(file, 'distributor_stock')}
-            processingStatus={statuses.distributor_stock}
+            onFileUpload={(file) => handleFileUpload(file, 'sales')}
+            processingStatus={statuses.sales}
+            acceptFileTypes=".xlsx,.xls,.csv"
+          />
+          <DataUploadCard
+            title="Distributors Stock on Hand"
+            description="Current Distributors Stock on Hand"
+            Icon={Users}
+            onFileUpload={(file) => handleFileUpload(file, 'stock_on_hand_distributors')}
+            processingStatus={statuses.stock_on_hand_distributors}
             acceptFileTypes=".xlsx,.xls,.csv"
           />
         </div>

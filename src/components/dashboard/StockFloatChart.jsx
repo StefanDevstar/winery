@@ -26,17 +26,26 @@ export default function StockFloatChart({
     if (active && payload && payload.length) {
       const d = payload[0].payload;
       const isBelow = d.stockFloat < threshold;
+      
+      // Calculate stock float using the formula to verify
+      // Formula: Stock Float = Distributor Stock on Hand - Distributor Projected Sales + Stock in Transit
+      const calculatedStockFloat = Math.max(0, (d.currentStock || 0) - (d.predictedSales || 0) + (d.inTransit || 0));
+      
       return (
         <div className="bg-white p-3 border rounded-lg shadow-md text-sm">
-          <p className="font-semibold mb-1">{label}</p>
-          <p>Current Stock: {d.currentStock?.toLocaleString()} cases</p>
-          <p>In Transit: {d.inTransit?.toLocaleString()} cases</p>
-          <p>Predicted Sales: {d.predictedSales?.toLocaleString()} cases</p>
-          <p className={`font-semibold ${isBelow ? "text-red-600" : "text-green-600"}`}>
-            Stock Float: {d.stockFloat?.toLocaleString()} cases
-          </p>
+          <p className="font-semibold mb-2">{label}</p>
+          <div className="space-y-1 text-xs">
+            <p><span className="font-medium">Distributor Stock on Hand:</span> {d.currentStock?.toLocaleString()} cases</p>
+            <p><span className="font-medium">In Transit:</span> {d.inTransit?.toLocaleString()} cases</p>
+            <p><span className="font-medium">Projected Sales:</span> {d.predictedSales?.toLocaleString()} cases</p>
+            <div className="border-t pt-1 mt-1">
+              <p className={`font-semibold ${isBelow ? "text-red-600" : "text-green-600"}`}>
+                Stock Float: {d.stockFloat?.toLocaleString()} cases
+              </p>
+            </div>
+          </div>
           {isBelow && (
-            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+            <p className="text-xs text-red-500 mt-2 flex items-center gap-1">
               <AlertTriangle className="w-3 h-3" /> Below threshold!
             </p>
           )}
@@ -47,12 +56,12 @@ export default function StockFloatChart({
   };
 
   const criticalCount = data.filter((d) => d.stockFloat < threshold).length;
-
+  console.log(data);
   return (
     <Card className="glass-effect">
       <CardHeader className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
         <div>
-          <CardTitle className="text-base sm:text-lg">Stock Float Projection</CardTitle>
+          <CardTitle className="text-base sm:text-lg">Distributor Stock Float Projection</CardTitle>
           <p className="text-xs sm:text-sm text-slate-500">
             {distributor !== "all" && `${distributor} • `}
             {wineType !== "all" && wineType}
@@ -128,6 +137,12 @@ export default function StockFloatChart({
           </ResponsiveContainer>
         </div>
 
+        <div className="mt-4 text-xs text-slate-500 border-t pt-3">
+          <p className="mb-2">
+            <strong>Formula:</strong> Stock Float = Distributor Stock on Hand - Distributor Projected Sales + Stock in Transit
+          </p>
+        </div>
+        
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 text-xs border-t pt-3 sm:pt-4">
           <div>
             <p className="text-slate-500 text-xs">Avg Stock Float</p>

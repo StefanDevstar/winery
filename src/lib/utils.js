@@ -950,7 +950,7 @@ function parseIRESheet(records) {
  *   - Location: Distributor/Location identifier
  *   - Available: Sales/Depletion quantity (NOT actual stock)
  */
-export function normalizeDistributorStockData(records, sheetName = '') {
+export function normalizeSalesData(records, sheetName = '') {
   if (!Array.isArray(records) || records.length === 0) return [];
   
   // Use sheet-specific parsers
@@ -1141,7 +1141,7 @@ export function normalizeExportsData(records, sheetName = '') {
     };
     
     // Find all required columns
-    const productDescCol = findColumn(['Product Description', 'Product Description (Stock)', 'Product Description (SKU)', 'Stock', 'Product', 'SKU', 'Item', 'Code']);
+    const productDescCol = findColumn(['Product Description', 'Stock', 'Product Description (SKU)', 'Product', 'SKU', 'Item', 'Code']);
     const customerCol = findColumn(['Company', 'Customer', 'Distributor']);
     const casesCol = findColumn(['Cases', 'Quantity', 'Qty', 'Cartons', 'Units']);
     const statusCol = findColumn(['Status', 'Order Status', 'Shipment Status']);
@@ -1355,7 +1355,7 @@ export function normalizeExportsData(records, sheetName = '') {
  * @param {string} sheetName - Name of the sheet
  * @returns {Array} - Normalized records
  */
-export function normalizeStockOnHandData(records, sheetName = '') {
+export function normalizeWarehouseStockData(records, sheetName = '') {
   if (!Array.isArray(records) || records.length === 0) return [];
   
   const normalized = [];
@@ -1400,7 +1400,7 @@ export function normalizeStockOnHandData(records, sheetName = '') {
     };
     
     // Find Product Description (SKU) column - this is the key column
-    const skuCol = findColumn(['Product Description', 'Product Description (SKU)', 'SKU', 'Product', 'Description']);
+    const skuCol = findColumn(['Client Description', 'Product Description (SKU)', 'SKU', 'Product', 'Description']);
     const codeCol = findColumn(['WW Code', 'Code', 'Item Code', 'Product Code']);
     const onHandCol = findColumn(['On Hand', 'OnHand', 'Stock On Hand']);
     const allocatedCol = findColumn(['Allocated']);
@@ -1421,17 +1421,39 @@ export function normalizeStockOnHandData(records, sheetName = '') {
       // Parse SKU to extract components
       const skuParts = parseProductSKU(sku || code);
       
-      // Get stock values
-      const onHand = onHandCol ? parseFloat(String(row[onHandCol] || '0').replace(/,/g, '')) : 0;
-      const allocated = allocatedCol ? parseFloat(String(row[allocatedCol] || '0').replace(/,/g, '')) : 0;
-      const pending = pendingCol ? parseFloat(String(row[pendingCol] || '0').replace(/,/g, '')) : 0;
+      // Helper function to parse numeric values, handling currency symbols and formatting
+      const parseNumericValue = (value) => {
+        if (value === undefined || value === null || value === '') return 0;
+        // Remove currency symbols ($, €, £, ¥), commas, and non-numeric characters (except decimal and minus)
+        const cleaned = String(value)
+          .replace(/[$€£¥,]/g, '') // Remove currency symbols and commas
+          .replace(/[^\d.-]/g, '') // Remove any remaining non-numeric except decimal and minus
+          .trim();
+        return cleaned !== '' && !isNaN(cleaned) ? parseFloat(cleaned) : 0;
+      };
+      
+      // Get stock values - use parseNumericValue to handle currency symbols and formatting
+      const onHand = onHandCol ? parseNumericValue(row[onHandCol]) : 0;
+      const allocated = allocatedCol ? parseNumericValue(row[allocatedCol]) : 0;
+      const pending = pendingCol ? parseNumericValue(row[pendingCol]) : 0;
       
       // Calculate Available: On Hand - (Allocated + Pending)
       // If Available column exists, use it; otherwise calculate
-      let available = availableCol ? parseFloat(String(row[availableCol] || '0').replace(/,/g, '')) : 0;
-      if (!availableCol || available === 0) {
+      let available = 0;
+      if (availableCol) {
+        const rawAvailable = row[availableCol];
+        // Use parseNumericValue to handle currency symbols ($, €, £, ¥) and formatting
+        available = parseNumericValue(rawAvailable);
+      }
+      
+      // If available column value is 0 or wasn't found, calculate it
+      if (!availableCol || (available === 0 && onHand > 0)) {
         // Calculate: Available = On Hand - Allocated - Pending
-        available = Math.max(0, onHand - allocated - pending);
+        const calculatedAvailable = Math.max(0, onHand - allocated - pending);
+        // Only use calculated value if we don't have a valid available column value
+        if (!availableCol || available === 0) {
+          available = calculatedAvailable;
+        }
       }
       
       // Only include records with meaningful data
@@ -1485,93 +1507,212 @@ export function normalizeStockOnHandData(records, sheetName = '') {
  * @param {Object} sheetsData - Object with sheet names as keys and arrays of records as values
  * @returns {Object} - Normalized sales data in format { totalsByYear: {...}, totalsYYYYMM: {...} }
  */
-export function normalizeIdigSalesData(sheetsData) {
-  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const totals = {};
+
+/**
+ * Normalizes distributor stock on hand data from Excel file.
+ * This is different from warehouse stock - it represents stock at distributor locations.
+ * Expected output format: Array of objects with distributor, product and stock information
+ * 
+ * @param {Array} records - Array of records from a sheet
+ * @param {string} sheetName - Name of the sheet
+ * @returns {Array} - Normalized records
+ */
+export function normalizeDistributorStockOnHandData(records, sheetName = '') {
+  if (!Array.isArray(records) || records.length === 0) return [];
   
-  // Process each sheet
-  Object.keys(sheetsData).forEach(sheetName => {
-    const records = sheetsData[sheetName];
-    if (!Array.isArray(records) || records.length === 0) return;
-    
-    if (sheetName === 'Monthly Depletions') {
-      // Parse monthly depletions sheet
-      // Structure: First column has products, subsequent columns have month headers like "Jan-22"
-      let headerRowIndex = -1;
-      let monthColumns = [];
-      
-      // Find header row with months
-      for (let i = 0; i < Math.min(5, records.length); i++) {
-        const row = records[i];
-        if (row && typeof row === 'object') {
-          const keys = Object.keys(row);
-          const monthKeys = keys.filter(k => {
-            const val = String(row[k] || k);
-            return val.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2}$/i);
-          });
-          
-          if (monthKeys.length > 0) {
-            headerRowIndex = i;
-            monthColumns = monthKeys.map(k => {
-              const match = String(row[k] || k).match(/^(\w{3})-(\d{2})$/i);
-              if (match) {
-                let year = '20' + match[2];
-                if (parseInt(match[2]) > 50) year = '19' + match[2];
-                return {
-                  key: k,
-                  month: MONTHS.find(m => m.toLowerCase() === match[1].toLowerCase()) || match[1],
-                  year: year
-                };
-              }
-              return null;
-            }).filter(Boolean);
-            break;
-          }
-        }
-      }
-      
-      if (monthColumns.length > 0 && headerRowIndex >= 0) {
-        const productCol = Object.keys(records[headerRowIndex])[0]; // First column usually has products
-        
-        // Process data rows
-        for (let i = headerRowIndex + 1; i < records.length; i++) {
-          const row = records[i];
-          if (!row || typeof row !== 'object') continue;
-          
-          const product = String(row[productCol] || '').trim();
-          if (!product || product.toLowerCase().includes('products') || product.toLowerCase().includes('total')) continue;
-          
-          // Process each month column
-          monthColumns.forEach(({ key, month, year }) => {
-            const value = parseFloat(String(row[key] || '0').replace(/,/g, '')) || 0;
-            if (value > 0) {
-              if (!totals[year]) totals[year] = {};
-              totals[year][month] = (totals[year][month] || 0) + value;
-            }
-          });
-        }
-      }
-    }
-  });
+  const normalized = [];
   
-  // Format output similar to parseCSVWithPapa
-  const sortedTotals = Object.fromEntries(
-    Object.entries(totals).map(([year, monthsObj]) => {
-      const sorted = Object.fromEntries(
-        MONTHS.filter(m => monthsObj[m] !== undefined).map(m => [m, Number(monthsObj[m].toFixed(2))])
-      );
-      return [year, sorted];
-    })
-  );
-  
-  const totalsYYYYMM = {};
-  for (const [year, monthsObj] of Object.entries(sortedTotals)) {
-    for (const [mon, val] of Object.entries(monthsObj)) {
-      const idx = MONTHS.indexOf(mon) + 1;
-      const ym = `${year}-${String(idx).padStart(2, '0')}`;
-      totalsYYYYMM[ym] = val;
+  // Records from parseExcel are already objects with header keys
+  // Each sheet represents a distributor, so use sheetName as the distributor name
+  const distributorName = sheetName || 'Unknown';
+  // Find the first non-empty record to get header keys
+  let firstRecord = null;
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
+    if (record && typeof record === 'object' && Object.keys(record).length > 0) {
+      firstRecord = record;
+      break;
     }
   }
   
-  return { totalsByYear: sortedTotals, totalsYYYYMM };
+  if (!firstRecord) return [];
+  
+  const headerKeys = Object.keys(firstRecord);
+  
+  // Debug: Log available columns for troubleshooting
+  console.log(`[normalizeDistributorStockOnHandData] Sheet: ${sheetName}, Available columns:`, headerKeys);
+  
+  // Find column keys by matching header names (case-insensitive, handles spaces/variations)
+  const findColumn = (searchTerms) => {
+    for (const term of searchTerms) {
+      const key = headerKeys.find(k => {
+        const headerVal = String(k || '').toUpperCase().trim();
+        const termUpper = term.toUpperCase();
+        // Exact match
+        if (headerVal === termUpper) return true;
+        // Contains match
+        if (headerVal.includes(termUpper) || termUpper.includes(headerVal)) return true;
+        // Match without spaces
+        if (headerVal.replace(/\s+/g, '') === termUpper.replace(/\s+/g, '')) return true;
+        // Match with underscores
+        if (headerVal.replace(/_/g, ' ') === termUpper || termUpper.replace(/_/g, ' ') === headerVal) return true;
+        return false;
+      });
+      if (key !== undefined) {
+        console.log(`[normalizeDistributorStockOnHandData] Found column "${key}" for search term "${term}"`);
+        return key;
+      }
+    }
+    return null;
+  };
+  
+  // Find key columns - try multiple variations and common Excel column names
+  const productCol = findColumn(['Product', 'Product Description', 'Product Name', 'Description', 'Item', 'Wine', 'Wine Name', 'Product Description (SKU)', 'SKU Description']);
+  const skuCol = findColumn(['SKU', 'Code', 'Product Code', 'Item Code', 'WW Code', 'Product Code', 'Item', 'WW Code', 'Code']);
+  
+  // Sheet-specific "On Hand" column detection
+  // NZ sheet: Column 6 (index 5)
+  // USA sheet: Last column
+  // AU-B sheet: Last column
+  // IRE sheet: 4th column (index 3)
+  const upperSheetName = sheetName.toUpperCase();
+  let onHandCol = null;
+  let wineTypeCol = null;
+  
+  if (upperSheetName === 'NZ' || upperSheetName === 'NZL' || sheetName.includes('NZ')) {
+    // NZ sheet: Column 6 (index 5, 0-based)
+    if (headerKeys.length > 5) {
+      wineTypeCol = headerKeys[1];
+      onHandCol = headerKeys[4];
+      console.log(`[normalizeDistributorStockOnHandData] NZ sheet: Using column 6 (index 5): "${onHandCol}"`);
+    }
+  } else if (upperSheetName === 'USA' || sheetName.includes('USA')) {
+    // USA sheet: Last column
+    if (headerKeys.length > 0) {
+      wineTypeCol = headerKeys[3];
+      onHandCol = headerKeys[4];
+      console.log(`[normalizeDistributorStockOnHandData] USA sheet: Using last column: "${onHandCol}"`);
+    }
+  } else if (upperSheetName === 'AU-B' || upperSheetName === 'AUB' || sheetName.includes('AU-B')) {
+    // AU-B sheet: Last column
+    if (headerKeys.length > 0) {
+      wineTypeCol = headerKeys[1];
+      onHandCol = headerKeys[headerKeys.length - 1];
+      console.log(`[normalizeDistributorStockOnHandData] AU-B sheet: Using last column: "${onHandCol}"`);
+    }
+  } else if (upperSheetName === 'IRE' || sheetName.includes('IRE')) {
+    // IRE sheet: 4th column (index 3)
+    if (headerKeys.length > 3) {
+      wineTypeCol = headerKeys[2];
+      onHandCol = headerKeys[3];
+      console.log(`[normalizeDistributorStockOnHandData] IRE sheet: Using 4th column (index 3): "${onHandCol}"`);
+    }
+  } else {
+    wineTypeCol = findColumn(['Description', 'Product']);
+    // For other sheets, try to find by name
+    onHandCol = findColumn(['On Hand', 'Column_5', 'Stock On Hand', 'Stock', 'Quantity', 'Qty', 'Current Stock', 'Stock On Hand', 'On Hand', 'Qty On Hand', 'On-Hand']);
+  }
+  
+  const countryCol = findColumn(['Country', 'Market', 'Region', 'Country Code', 'AdditionalAttribute2', 'Market Code']);
+  
+  // Debug: Log found columns
+  console.log(`[normalizeDistributorStockOnHandData] Sheet: ${sheetName}, Found columns - Product: ${productCol}, SKU: ${skuCol}, OnHand: ${onHandCol}, Country: ${countryCol}`);
+  
+  if (!onHandCol) {
+    console.warn(`[normalizeDistributorStockOnHandData] WARNING: Could not find "On Hand" column in sheet "${sheetName}". Available columns:`, headerKeys);
+  }
+  
+  // Helper function to parse numeric values, handling currency symbols and formatting
+  const parseNumericValue = (value) => {
+    if (value === undefined || value === null || value === '') return 0;
+    const cleaned = String(value)
+      .replace(/[$€£¥,]/g, '') // Remove currency symbols and commas
+      .replace(/[^\d.-]/g, '') // Remove any remaining non-numeric except decimal and minus
+      .trim();
+    const parsed = cleaned !== '' && !isNaN(cleaned) ? parseFloat(cleaned) : 0;
+    return parsed;
+  };
+  
+  // Process all records (they're already objects with header keys)
+  for (let i = 0; i < records.length; i++) {
+    const row = records[i];
+    if (!row || typeof row !== 'object') continue;
+    
+    // Skip if this looks like a header row (check if all values are header-like strings)
+    const rowValues = Object.values(row);
+    const nonEmptyValues = rowValues.filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+    if (nonEmptyValues.length > 0) {
+      const isHeaderRow = nonEmptyValues.every(v => {
+        const val = String(v || '').toUpperCase().trim();
+        return val.includes('DISTRIBUTOR') || 
+               val.includes('LOCATION') ||
+               val.includes('PRODUCT') || 
+               val.includes('SKU') ||
+               val.includes('ON HAND') ||
+               val.includes('STOCK') ||
+               val.includes('QUANTITY') ||
+               val.includes('CODE') ||
+               val.includes('DESCRIPTION');
+      });
+      if (isHeaderRow && i === 0) {
+        console.log(`[normalizeDistributorStockOnHandData] Skipping header row at index ${i}`);
+        continue; // Skip first row if it's a header
+      }
+    }
+    
+    // Get product information
+    const product = productCol ? String(row[productCol] || '').trim() : '';
+    const sku = skuCol ? String(row[skuCol] || '').trim() : '';
+    const country = countryCol ? String(row[countryCol] || '').trim() : '';
+    
+    // Skip rows without product/SKU information
+    if (!product && !sku) continue;
+    
+    // Get stock on hand - this is the critical field
+    const onHand = onHandCol ? parseNumericValue(row[onHandCol]) : 0;
+    const wineType = wineTypeCol ? String(row[wineTypeCol] || '').trim() : '';
+  
+    // Parse SKU to extract components
+    const skuParts = parseProductSKU(sku || product);
+    
+    // Extract wine code from SKU or product
+    const wineCode = skuParts.fullSKU || 
+                    (sku ? sku.toUpperCase().replace(/\s+/g, '_') : '') ||
+                    (product ? product.split(' ').slice(0, 3).join('_').toUpperCase().replace(/\s+/g, '_') : '');
+    
+    normalized.push({
+      // Distributor information - use sheet name as distributor
+      Location: distributorName,
+      Distributor: distributorName,
+      
+      // Product information
+      Product: wineType,
+      ProductName: product || (skuParts.brand ? `${skuParts.brand} ${skuParts.variety}`.trim() : ''),
+      Code: sku || skuParts.fullSKU,
+      
+      // SKU components
+      Brand: skuParts.brand,
+      BrandCode: skuParts.brandCode,
+      Vintage: skuParts.vintage,
+      Variety: skuParts.variety,
+      VarietyCode: skuParts.varietyCode,
+      Market: normalizeCountryCode(country || sheetName), // Normalized country code
+      MarketCode: skuParts.marketCode,
+      
+      // Stock information
+      OnHand: onHand, // Stock on hand at distributor
+      StockOnHand: onHand, // Alias for compatibility
+      
+      // Additional fields for Dashboard compatibility
+      AdditionalAttribute2: normalizeCountryCode(country || sheetName), // Normalized country code
+      AdditionalAttribute3: wineCode || `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase().replace(/\s+/g, '_'),
+      
+      _sheetName: sheetName,
+      _originalData: row
+    });
+  }
+  
+  
+  // Filter out empty records before returning
+  return filterEmptyRecords(normalized);
 }

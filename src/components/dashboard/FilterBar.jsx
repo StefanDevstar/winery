@@ -170,7 +170,7 @@ export default function FilterBar({ filters, onFilterChange }) {
           'SAB': 'Sauvignon Blanc',
           'PIN': 'Pinot Noir',
           'CHR': 'Chardonnay',
-          'ROSE': 'Rose',
+          'ROS': 'Rose',
           'PIG': 'Pinot Gris',
           'GRU': 'Gruner Veltliner',
           'LHS': 'Late Harvest Sauvignon',
@@ -183,7 +183,7 @@ export default function FilterBar({ filters, onFilterChange }) {
           const parts = wineCode.split('_');
           const varietyCode = parts.find(p => {
             const upper = p.toUpperCase();
-            return ['SAB', 'PIN', 'CHR', 'ROSE', 'PIG', 'GRU', 'LHS', 'RIESLING', 'CHARDONNAY'].includes(upper);
+            return ['SAB', 'PIN', 'CHR', 'ROS', 'PIG', 'GRU', 'LHS', 'RIESLING', 'CHARDONNAY'].includes(upper);
           });
           
           if (varietyCode) {
@@ -229,7 +229,7 @@ export default function FilterBar({ filters, onFilterChange }) {
           } else if (lowerName.includes('riesling')) {
             checkAndAddWineType('RIESLING', 'Riesling');
           } else if (lowerName.includes('rose')) {
-            checkAndAddWineType('ROSE', 'Rose');
+            checkAndAddWineType('ROS', 'Rose');
           }
         }
         
@@ -246,7 +246,7 @@ export default function FilterBar({ filters, onFilterChange }) {
           } else if (lowerVariety.includes('riesling')) {
             checkAndAddWineType('RIESLING', 'Riesling');
           } else if (lowerVariety.includes('rose')) {
-            checkAndAddWineType('ROSE', 'Rose');
+            checkAndAddWineType('ROS', 'Rose');
           }
         }
       });
@@ -333,7 +333,7 @@ export default function FilterBar({ filters, onFilterChange }) {
             </SelectContent>
           </Select>
 
-          <Select value={filters.distributor} onValueChange={(value) => onFilterChange('distributor', value)}>
+          {/* <Select value={filters.distributor} onValueChange={(value) => onFilterChange('distributor', value)}>
             <SelectTrigger className="w-full sm:w-48 text-sm">
               <SelectValue placeholder={filters.country === "usa" ? "State" : "Distributor"} />
             </SelectTrigger>
@@ -347,7 +347,7 @@ export default function FilterBar({ filters, onFilterChange }) {
                 </SelectItem>
               ))}
             </SelectContent>
-          </Select>
+          </Select> */}
 
           <Select value={filters.wineType} onValueChange={(value) => onFilterChange('wineType', value)}>
             <SelectTrigger className="w-full sm:w-48 text-sm">
@@ -396,10 +396,45 @@ export default function FilterBar({ filters, onFilterChange }) {
       {/* Date/Prediction Range Filters */}
       <div className="border-t pt-3 sm:pt-4">
         {viewMode === "historical" ? (
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4">
-            <div className="flex items-center gap-2 text-slate-600">
-              <CalendarIcon className="w-4 h-4" />
-              <span className="text-xs sm:text-sm font-medium">Historical Period:</span>
+          <div className="flex flex-col gap-3 sm:gap-4">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
+              <div className="flex items-center gap-2 text-slate-600">
+                <CalendarIcon className="w-4 h-4" />
+                <span className="text-xs sm:text-sm font-medium">Historical Period:</span>
+              </div>
+              {/* Last Update Date */}
+              {(() => {
+                try {
+                  const distributorMetadataRaw = localStorage.getItem("vc_distributor_stock_metadata");
+                  const distributorRaw = localStorage.getItem("vc_distributor_stock_data");
+                  let lastUpdate = null;
+                  
+                  if (distributorMetadataRaw) {
+                    const metadata = JSON.parse(distributorMetadataRaw);
+                    if (metadata.lastUpdate) {
+                      lastUpdate = new Date(metadata.lastUpdate);
+                    }
+                  }
+                  
+                  // Fallback: use data timestamp if available
+                  if (!lastUpdate && distributorRaw) {
+                    const data = JSON.parse(distributorRaw);
+                    if (data && data.length > 0 && data[0]._timestamp) {
+                      lastUpdate = new Date(data[0]._timestamp);
+                    }
+                  }
+                  
+                  return lastUpdate ? (
+                    <div className="flex items-center gap-1 text-xs text-slate-500">
+                      <span>Last updated: {format(lastUpdate, "MMM d, yyyy")}</span>
+                      <span className="text-yellow-600 font-medium">⚠</span>
+                      <span className="text-xs">Not all data aligned with dates</span>
+                    </div>
+                  ) : null;
+                } catch (err) {
+                  return null;
+                }
+              })()}
             </div>
             
             <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
