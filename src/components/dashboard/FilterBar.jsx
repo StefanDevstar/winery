@@ -6,6 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Filter, Calendar as CalendarIcon, TrendingUp } from "lucide-react";
 import { format } from "date-fns";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { normalizeCountryCode } from "@/lib/utils";
 
 export default function FilterBar({ filters, onFilterChange }) {
   const [dateRange, setDateRange] = React.useState({
@@ -33,10 +34,12 @@ export default function FilterBar({ filters, onFilterChange }) {
   // Extract available countries, distributors/states and wine types from data
   const filterOptions = useMemo(() => {
     try {
-      const distributorRaw = localStorage.getItem("vc_distributor_stock_data");
-      const distributorMetadataRaw = localStorage.getItem("vc_distributor_stock_metadata");
+      const distributorRaw = localStorage.getItem("vc_distributor_stock_on_hand_data");
+      const distributorMetadataRaw = localStorage.getItem("vc_distributor_stock_on_hand_metadata");
+      const salesMetadataRaw = localStorage.getItem("vc_salesmetadata");
       
       let distributorStock = [];
+      let salesData = [];
       let metadata = null;
       
       if (distributorRaw) {
@@ -50,8 +53,35 @@ export default function FilterBar({ filters, onFilterChange }) {
         metadata = JSON.parse(distributorMetadataRaw);
       }
       
-      if (distributorStock.length === 0) {
-        return { countries: [], distributors: [], wineTypes: [] };
+      // Also load sales data to extract states for USA
+      if (salesMetadataRaw) {
+        try {
+          const salesMetadata = JSON.parse(salesMetadataRaw);
+          if (salesMetadata && salesMetadata.sheetNames && Array.isArray(salesMetadata.sheetNames)) {
+            salesMetadata.sheetNames.forEach(sheetName => {
+              if (sheetName.toUpperCase().includes('USA')) {
+                const salesKey = `vc_sales_data_${sheetName}`;
+                const salesSheetData = localStorage.getItem(salesKey);
+                if (salesSheetData) {
+                  try {
+                    const parsed = JSON.parse(salesSheetData);
+                    if (Array.isArray(parsed)) {
+                      salesData.push(...parsed);
+                    }
+                  } catch (e) {
+                    // Error parsing sales sheet
+                  }
+                }
+              }
+            });
+          }
+        } catch (e) {
+          // Error parsing sales metadata
+        }
+      }
+      
+      if (distributorStock.length === 0 && salesData.length === 0) {
+        return { countries: [], distributors: [], states: [], wineTypes: [] };
       }
 
       // Extract countries from metadata sheet names (this is the source of truth)
@@ -69,6 +99,7 @@ export default function FilterBar({ filters, onFilterChange }) {
       
       // Map sheet names to country codes
       const sheetNameToCountryCode = {
+        'NZ': 'nzl',
         'NZL': 'nzl',
         'AUB': 'au-b',
         'AU-B': 'au-b',
@@ -88,7 +119,11 @@ export default function FilterBar({ filters, onFilterChange }) {
             countrySet.add(countryCode);
           } else {
             // Fallback: try to normalize sheet name directly
-            const fallbackCode = normalizedSheetName.toLowerCase();
+            let fallbackCode = normalizedSheetName.toLowerCase();
+            // Convert NZ to nzl if it includes NZ
+            if (fallbackCode.includes('nz') && !fallbackCode.includes('nzl')) {
+              fallbackCode = fallbackCode.replace(/nz/g, 'nzl');
+            }
             if (fallbackCode) {
               countrySet.add(fallbackCode);
             }
@@ -99,7 +134,8 @@ export default function FilterBar({ filters, onFilterChange }) {
       // Fallback: if no metadata, extract from actual data (for backward compatibility)
       if (countrySet.size === 0) {
         distributorStock.forEach(r => {
-          const countryCode = (r.AdditionalAttribute2 || "").toLowerCase().trim();
+          const rawCountryCode = (r.AdditionalAttribute2 || "");
+          const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
           if (countryCode) {
             countrySet.add(countryCode);
           }
@@ -131,33 +167,58 @@ export default function FilterBar({ filters, onFilterChange }) {
 
       const countryFilter = filters.country === "all" ? null : filters.country.toLowerCase();
 
+      // Combine distributor stock and sales data for state extraction (for USA)
+      const allData = [...distributorStock, ...salesData];
+      
       // Filter data by country if a country is selected
       const countryFilteredData = countryFilter
-        ? distributorStock.filter(r => {
-            const countryCode = (r.AdditionalAttribute2 || "").toLowerCase().trim();
-            return countryCode === countryFilter;
+        ? allData.filter(r => {
+            const rawCountryCode = (r.AdditionalAttribute2 || "");
+            // Use normalizeCountryCode to normalize country codes to "nzl" for New Zealand
+            const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
+            const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
+            return countryCode === normalizedFilter;
           })
-        : distributorStock;
+        : allData;
 
       // Extract unique distributors/states
       const locationSet = new Set();
+      const stateSet = new Set(); // For USA states
       const wineTypeMap = new Map(); // Map to store wine code -> display name
       const wineNameToCodeMap = new Map(); // Reverse map: wine name -> code (to prevent duplicates by name)
 
       countryFilteredData.forEach(r => {
         let location = (r.Location || "").trim();
         if (location && location !== "Unknown") {
-          // Location no longer has country code prefix (removed at source), but keep fallback for other data sources
-          // Strip country code prefix if present (fallback for other data sources that might still have it)
-          let cleanedLocation = location.replace(/^[A-Z]{2,3}\s*-\s*/i, "").trim();
-          if (!cleanedLocation || cleanedLocation === location) {
-            cleanedLocation = location.replace(/^[A-Z]{2,3}\s+/i, "").trim();
+          // For USA, Location field contains state name
+          if (countryFilter === 'usa') {
+            // Location is the state name for USA data
+            // Filter out invalid entries like "Dist. STATE" or entries that don't look like state names
+            // Valid state names are typically 2-letter abbreviations or full state names
+            const upperLocation = location.toUpperCase();
+            // Skip entries that contain "DIST" or "STATE" as separate words (like "Dist. STATE")
+            if (upperLocation.includes('DIST') || (upperLocation.includes('STATE') && !upperLocation.match(/^[A-Z]{2}$/))) {
+              return; // Skip this entry
+            }
+            // Only add valid state names (2-letter codes or proper state names)
+            // Common invalid patterns: "Dist. STATE", "STATE", etc.
+            if (location.length >= 2 && !location.match(/^(dist|state|district)/i)) {
+              stateSet.add(location);
+            }
+          } else {
+            // For other countries, Location is distributor name
+            // Location no longer has country code prefix (removed at source), but keep fallback for other data sources
+            // Strip country code prefix if present (fallback for other data sources that might still have it)
+            let cleanedLocation = location.replace(/^[A-Z]{2,3}\s*-\s*/i, "").trim();
+            if (!cleanedLocation || cleanedLocation === location) {
+              cleanedLocation = location.replace(/^[A-Z]{2,3}\s+/i, "").trim();
+            }
+            // If still no change, use original location (no prefix was present)
+            if (!cleanedLocation || cleanedLocation === location) {
+              cleanedLocation = location;
+            }
+            locationSet.add(cleanedLocation);
           }
-          // If still no change, use original location (no prefix was present)
-          if (!cleanedLocation || cleanedLocation === location) {
-            cleanedLocation = location;
-          }
-          locationSet.add(cleanedLocation);
         }
 
         // Extract wine type from multiple possible fields
@@ -265,14 +326,18 @@ export default function FilterBar({ filters, onFilterChange }) {
         .filter(loc => loc && loc !== "Unknown")
         .sort();
       
+      // States for USA
+      const states = Array.from(stateSet)
+        .filter(state => state && state !== "Unknown")
+        .sort();
+      
       // Convert wine type map to array - duplicates already prevented by wineNameToCodeMap
       const wineTypes = Array.from(wineTypeMap.entries())
         .map(([code, name]) => ({ code: code.toLowerCase(), name }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
-      return { countries, distributors, wineTypes };
+      return { countries, distributors, states, wineTypes };
     } catch (err) {
-      console.warn("Error extracting filter options:", err);
       return { countries: [], distributors: [], wineTypes: [] };
     }
   }, [filters.country]);
@@ -341,21 +406,22 @@ export default function FilterBar({ filters, onFilterChange }) {
             </SelectContent>
           </Select>
 
-          {/* <Select value={filters.distributor} onValueChange={(value) => onFilterChange('distributor', value)}>
-            <SelectTrigger className="w-full sm:w-48 text-sm">
-              <SelectValue placeholder={filters.country === "usa" ? "State" : "Distributor"} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">
-                {filters.country === "usa" ? "All States" : "All Distributors"}
-              </SelectItem>
-              {filterOptions.distributors.map((distributor) => (
-                <SelectItem key={distributor} value={distributor}>
-                  {distributor.replace(/_/g, " ")}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select> */}
+          {/* State filter for USA only */}
+          {filters.country === "usa" && (
+            <Select value={filters.state || "all"} onValueChange={(value) => onFilterChange('state', value)}>
+              <SelectTrigger className="w-full sm:w-48 text-sm">
+                <SelectValue placeholder="State" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All States</SelectItem>
+                {filterOptions.states && filterOptions.states.map((state) => (
+                  <SelectItem key={state} value={state}>
+                    {state}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
 
           <Select value={filters.wineType} onValueChange={(value) => onFilterChange('wineType', value)}>
             <SelectTrigger className="w-full sm:w-48 text-sm">
@@ -412,8 +478,8 @@ export default function FilterBar({ filters, onFilterChange }) {
               {/* Last Update Date */}
               {(() => {
                 try {
-                  const distributorMetadataRaw = localStorage.getItem("vc_distributor_stock_metadata");
-                  const distributorRaw = localStorage.getItem("vc_distributor_stock_data");
+                  const distributorMetadataRaw = localStorage.getItem("vc_distributor_stock_on_hand_metadata");
+                  const distributorRaw = localStorage.getItem("vc_distributor_stock_on_hand_data");
                   let lastUpdate = null;
                   
                   if (distributorMetadataRaw) {

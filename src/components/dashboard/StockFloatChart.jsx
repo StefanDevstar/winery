@@ -56,7 +56,6 @@ export default function StockFloatChart({
   };
 
   const criticalCount = data.filter((d) => d.stockFloat < threshold).length;
-  console.log(data);
   return (
     <Card className="glass-effect">
       <CardHeader className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">

@@ -114,12 +114,11 @@ export default function UploadDataPage() {
   const handleFileUpload = async (file, type) => {
     if (!file) return;
 
-    // Check file type - Excel for distributor_stock, exports, stock_on_hand, sales; CSV also accepted for some
+    // Check file type - Excel for exports, stock_on_hand_distributors, sales, warehouse_stock; CSV also accepted for some
     const isExcel = file.name.toLowerCase().endsWith('.xlsx') || file.name.toLowerCase().endsWith('.xls');
     const isCsv = file.type === 'text/csv' || file.name.toLowerCase().endsWith('.csv');
     
-    // Accept Excel files for: distributor_stock, exports, stock_on_hand, sales (idig)
-    // Accept CSV files for: exports, sales (idig), cin7
+    // Accept CSV files for: exports, stock_on_hand_distributors, sales, warehouse_stock
     const excelTypes = ['warehouse_stock', 'exports', 'stock_on_hand_distributors', 'sales'];
     
     if (excelTypes.includes(type)) {
@@ -187,7 +186,7 @@ export default function UploadDataPage() {
             // localStorage.setItem('vc_sales_data', combinedDataString);
           } catch (e) {
             if (e.name === 'QuotaExceededError' || e.code === 22) {
-              console.warn('Combined sales data too large for localStorage. Will aggregate from individual sheets.');
+              // Combined sales data too large for localStorage. Will aggregate from individual sheets.
               localStorage.removeItem('vc_sales_data');
             } else {
               throw e;
@@ -218,7 +217,7 @@ export default function UploadDataPage() {
             localStorage.setItem('vc_exports_data', combinedDataString);
           } catch (e) {
             if (e.name === 'QuotaExceededError' || e.code === 22) {
-              console.warn('Combined exports data too large for localStorage. Will aggregate from individual sheets.');
+              // Combined exports data too large for localStorage. Will aggregate from individual sheets.
               localStorage.removeItem('vc_exports_data');
             } else {
               throw e;
@@ -249,7 +248,7 @@ export default function UploadDataPage() {
             localStorage.setItem('vc_warehouse_stock_data', combinedDataString);
           } catch (e) {
             if (e.name === 'QuotaExceededError' || e.code === 22) {
-              console.warn('Combined warehouse stock data too large for localStorage. Will aggregate from individual sheets.');
+              // Combined warehouse stock data too large for localStorage. Will aggregate from individual sheets.
               localStorage.removeItem('vc_warehouse_stock_data');
             } else {
               throw e;
@@ -277,7 +276,6 @@ export default function UploadDataPage() {
           try {
             const combinedDataString = JSON.stringify(allNormalizedRecords);
             const dataSizeMB = (combinedDataString.length * 2) / (1024 * 1024); // Approximate size in MB (UTF-16 encoding)
-            console.log(`Distributor stock on hand - Records: ${allNormalizedRecords.length}, Size: ${dataSizeMB.toFixed(2)} MB`);
             
             // Check localStorage usage before saving
             let totalSize = 0;
@@ -287,16 +285,14 @@ export default function UploadDataPage() {
               }
             }
             const totalSizeMB = (totalSize * 2) / (1024 * 1024);
-            console.log(`Current localStorage usage: ${totalSizeMB.toFixed(2)} MB`);
             
             // Try to free up space by removing old combined data first
             localStorage.removeItem('vc_distributor_stock_on_hand_data');
             
             localStorage.setItem('vc_distributor_stock_on_hand_data', combinedDataString);
-            console.log('Successfully saved combined distributor stock on hand data');
           } catch (e) {
             if (e.name === 'QuotaExceededError' || e.code === 22) {
-              console.warn('Combined distributor stock on hand data too large for localStorage. Will aggregate from individual sheets.');
+              // Combined distributor stock on hand data too large for localStorage. Will aggregate from individual sheets.
               // Remove the combined key if it exists to free space
               localStorage.removeItem('vc_distributor_stock_on_hand_data');
               // Show user-friendly message
@@ -321,7 +317,6 @@ export default function UploadDataPage() {
           records = parseCSVWithPapa(text).totalsByYear
         } else if (type === "exports"){
           records = parseExportsCSV(text);
-          console.log("Using standard parser for type:", records)
         } else {
           records = parseCSV(text);
         }
@@ -337,13 +332,10 @@ export default function UploadDataPage() {
 
       // Persist to localStorage under different keys depending on type
       const keyMap = {
-        cin7: 'vc_cin7_data',
-        stock_on_hand: 'vc_cin7_data', // stock_on_hand uses same key as cin7 (legacy)
         warehouse_stock: 'vc_warehouse_stock_data',
         stock_on_hand_distributors: 'vc_distributor_stock_on_hand_data',
         exports: 'vc_exports_data',
-        sales: 'vc_sales_data',
-        distributor_stock: 'vc_distributor_stock_data' // This is depletion summary (sales data)
+        sales: 'vc_sales_data'
       };
       const storageKey = keyMap[type] || `vc_upload_${type}`;
       // For CSV files, save to combined key (Excel files already saved combined data above)
@@ -366,14 +358,14 @@ export default function UploadDataPage() {
             type, 
             storageKey, 
             count: totalRecords,
-            ...((type === 'distributor_stock' || type === 'exports' || type === 'stock_on_hand' || type === 'sales') && isExcel ? { sheets: sheetCount } : {})
+            ...((type === 'exports' || type === 'stock_on_hand_distributors' || type === 'sales' || type === 'warehouse_stock') && isExcel ? { sheets: sheetCount } : {})
           } 
         }));
       } catch (e) {
         // ignore if CustomEvent not supported
       }
 
-      const successMessage = (type === 'distributor_stock' || type === 'exports' || type === 'stock_on_hand' || type === 'sales') && isExcel
+      const successMessage = (type === 'exports' || type === 'stock_on_hand_distributors' || type === 'sales' || type === 'warehouse_stock') && isExcel
         ? `${totalRecords} records from ${sheetCount} sheet(s) imported successfully.`
         : `${totalRecords} records imported successfully.`;
       
@@ -381,7 +373,6 @@ export default function UploadDataPage() {
       setTimeout(() => updateStatus(type, 'idle', ''), 3000);
 
     } catch (error) {
-      console.error(`Upload error for ${type}:`, error);
       updateStatus(type, 'error', error.message || 'An unknown error occurred.');
       setGlobalError(`Failed to process ${type} data. Please check the file format and try again.`);
     }
@@ -401,8 +392,8 @@ export default function UploadDataPage() {
       setStatuses({
         sales: { status: 'idle', message: '', progress: 0 },
         exports: { status: 'idle', message: '', progress: 0 },
-        stock_on_hand: { status: 'idle', message: '', progress: 0 },
-        distributor_stock: { status: 'idle', message: '', progress: 0 }
+        stock_on_hand_distributors: { status: 'idle', message: '', progress: 0 },
+        warehouse_stock: { status: 'idle', message: '', progress: 0 }
       });
 
       // Dispatch event to notify dashboard that data was cleared

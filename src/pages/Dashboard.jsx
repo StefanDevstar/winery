@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { normalizeCountryCode } from "../lib/utils";
+import { normalizeCountryCode, normalizeWineTypeToCode } from "../lib/utils";
 import KPITile from "../components/dashboard/KPITile";
 import FilterBar from "../components/dashboard/FilterBar";
 import StockFloatChart from "../components/dashboard/StockFloatChart";
@@ -72,8 +72,9 @@ function parseDate(dateStr) {
 
 export default function Dashboard() {
   const [filters, setFilters] = useState({
-    country: "nzl", // Default to New Zealand (first in the list)
+    country: "usa", // Default to New Zealand (first in the list)
     distributor: "all",
+    state: "all", // State filter for USA
     wineType: "all",
     year: "all",
     viewMode: "historical",
@@ -252,6 +253,7 @@ export default function Dashboard() {
           // Pre-compute filter values for efficiency
           const countryFilter = filters.country === "all" ? null : filters.country.toLowerCase();
           const distributorFilter = filters.distributor === "all" ? null : filters.distributor.replace(/_/g, " ").toLowerCase();
+          const stateFilter = filters.state === "all" ? null : filters.state.trim();
           const wineTypeFilter = filters.wineType === "all" ? null : filters.wineType.replace(/_/g, " ").toLowerCase();
           const wineTypeCode = filters.wineType === "all" ? null : filters.wineType.split("_")[0];
           const yearFilter = filters.year === "all" ? null : filters.year.toString();
@@ -265,11 +267,22 @@ export default function Dashboard() {
             
             // Apply filters
             if (countryFilter) {
-              const countryCode = (r.AdditionalAttribute2 || r.Market || "").toLowerCase().trim();
-              if (countryCode !== countryFilter) continue;
+              const rawCountryCode = (r.AdditionalAttribute2 || r.Market || "");
+              const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
+              const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
+              if (countryCode !== normalizedFilter) continue;
             }
             
-            if (distributorFilter) {
+            // For USA, filter by state (Location field contains state name)
+            if (countryFilter === 'usa' && stateFilter) {
+              const location = (r.Location || "").trim();
+              if (location !== stateFilter) {
+                continue;
+              }
+            }
+            
+            // For other countries, filter by distributor
+            if (countryFilter !== 'usa' && distributorFilter) {
               let location = (r.Location || r.Distributor || "").toLowerCase().replace(/_/g, " ");
               let locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s*-\s*/i, "").trim();
               if (!locationWithoutPrefix || locationWithoutPrefix === location) {
@@ -286,15 +299,110 @@ export default function Dashboard() {
             }
             
             if (wineTypeFilter || wineTypeCode) {
+              // Check both AdditionalAttribute3 and VarietyCode fields
               const wineCode = (r.AdditionalAttribute3 || "").toLowerCase();
-              if (wineTypeCode && !wineCode.includes(wineTypeCode.toLowerCase())) {
+              const varietyCode = (r.VarietyCode || "").toLowerCase();
+              const productName = (r.ProductName || "").toLowerCase();
+              
+              // Map wine type codes (from filter) to their full names and variations for matching
+              const codeToNameMap = {
+                'sab': ['sauvignon blanc', 'sauvignon', 'sab'],
+                'pin': ['pinot noir', 'pin'],
+                'chr': ['chardonnay', 'chr'],
+                'pig': ['pinot gris', 'pinot grigio', 'pig'],
+                'rose': ['rose', 'rosé'],
+                'gru': ['gruner veltliner', 'gruner', 'gru'],
+                'lhs': ['late harvest sauvignon', 'lhs'],
+                'riesling': ['riesling']
+              };
+              
+              let matchesWine = false;
+              
+              if (wineTypeCode) {
+                const code = wineTypeCode.toLowerCase();
+                const codeUpper = code.toUpperCase();
+                
+                // PRIORITY 1: Check AdditionalAttribute3 and VarietyCode - exact match first
+                if (!matchesWine) {
+                  matchesWine = wineCode === code ||
+                               wineCode === codeUpper ||
+                               wineCode.trim() === code ||
+                               wineCode.trim() === codeUpper ||
+                               varietyCode === code ||
+                               varietyCode === codeUpper ||
+                               varietyCode.trim() === code ||
+                               varietyCode.trim() === codeUpper;
+                }
+                
+                // Then check for variety code in compound formats in both fields
+                if (!matchesWine) {
+                  matchesWine = wineCode.includes(`_${code}_`) || 
+                               wineCode.includes(`_${codeUpper}_`) ||
+                               wineCode.startsWith(`${code}_`) || 
+                               wineCode.startsWith(`${codeUpper}_`) ||
+                               wineCode.endsWith(`_${code}`) ||
+                               wineCode.endsWith(`_${codeUpper}`) ||
+                               wineCode.indexOf(`_${code}_`) >= 0 ||
+                               wineCode.indexOf(`_${codeUpper}_`) >= 0 ||
+                               varietyCode.includes(`_${code}_`) || 
+                               varietyCode.includes(`_${codeUpper}_`) ||
+                               varietyCode.startsWith(`${code}_`) || 
+                               varietyCode.startsWith(`${codeUpper}_`) ||
+                               varietyCode.endsWith(`_${code}`) ||
+                               varietyCode.endsWith(`_${codeUpper}`) ||
+                               varietyCode.indexOf(`_${code}_`) >= 0 ||
+                               varietyCode.indexOf(`_${codeUpper}_`) >= 0;
+                }
+                
+                // PRIORITY 2: Check if wineCode or varietyCode itself is a full wine name (normalizeWineTypeToCode might have returned full text)
+                if (!matchesWine) {
+                  const normalizedWineCode = normalizeWineTypeToCode(wineCode.toUpperCase()).toLowerCase();
+                  const normalizedVarietyCode = normalizeWineTypeToCode(varietyCode.toUpperCase()).toLowerCase();
+                  if (normalizedWineCode === code || normalizedWineCode === codeUpper ||
+                      normalizedVarietyCode === code || normalizedVarietyCode === codeUpper) {
+                    matchesWine = true;
+                  }
+                }
+                
+                // PRIORITY 3: Check for full variety names in both fields
+                if (!matchesWine && codeToNameMap[code]) {
+                  for (const name of codeToNameMap[code]) {
+                    const variations = [
+                      name,
+                      name.replace(/\s+/g, ''),
+                      name.toUpperCase(),
+                      name.toUpperCase().replace(/\s+/g, '')
+                    ];
+                    
+                    for (const variation of variations) {
+                      if (wineCode.includes(variation.toLowerCase()) || 
+                          varietyCode.includes(variation.toLowerCase())) {
+                        matchesWine = true;
+                        break;
+                      }
+                    }
+                    if (matchesWine) break;
+                  }
+                }
+                
+                // PRIORITY 4: Check product name
+                if (!matchesWine && codeToNameMap[code] && productName) {
+                  for (const name of codeToNameMap[code]) {
+                    if (productName.includes(name)) {
+                      matchesWine = true;
+                      break;
+                    }
+                  }
+                }
+              }
+              
+              if (!matchesWine) {
                 continue;
               }
             }
             
             filteredDistributorStockOnHand.push(r);
           }
-          
           // ───────── Filter Sales Data (Depletion Summary) ─────────
           // Filter sales/depletion data for sales predictions
           const filteredStock = [];
@@ -303,8 +411,10 @@ export default function Dashboard() {
             
             // Early exit for country filter (most selective)
             if (countryFilter) {
-              const countryCode = (r.AdditionalAttribute2 || "").toLowerCase().trim();
-              if (countryCode !== countryFilter) continue;
+              const rawCountryCode = (r.AdditionalAttribute2 || "");
+              const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
+              const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
+              if (countryCode !== normalizedFilter) continue;
               
             }
             
@@ -347,10 +457,16 @@ export default function Dashboard() {
               if (!yearMatch) continue;
             }
             
-            // Early exit for distributor filter
-            // Normalize location the same way as filter (replace underscores with spaces)
-            // Location no longer has country code prefix (removed at source), but keep fallback for other data sources
-            if (distributorFilter) {
+            // For USA, filter by state (Location field contains state name)
+            if (countryFilter === 'usa' && stateFilter) {
+              const location = (r.Location || "").trim();
+              if (location !== stateFilter) {
+                continue;
+              }
+            }
+            
+            // For other countries, filter by distributor
+            if (countryFilter !== 'usa' && distributorFilter) {
               let location = (r.Location || "").toLowerCase().replace(/_/g, " ");
               // Strip country code prefix if present (fallback for other data sources that might still have it)
               let locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s*-\s*/i, "").trim();
@@ -414,7 +530,15 @@ export default function Dashboard() {
                 const codeUpper = code.toUpperCase();
                 
                 // PRIORITY 1: Check AdditionalAttribute3 (wineCode) - this is the PRIMARY field
-                // First check for variety code directly (e.g., PIG, PIN, ROSE)
+                // First check for exact match (most common for normalized codes like SAB, PIN, etc.)
+                if (!matchesWine) {
+                  matchesWine = wineCode === code ||
+                               wineCode === codeUpper ||
+                               wineCode.trim() === code ||
+                               wineCode.trim() === codeUpper;
+                }
+                
+                // Then check for variety code in compound formats (e.g., BRAND_CODE_VINTAGE or CODE_VINTAGE)
                 if (!matchesWine) {
                   matchesWine = wineCode.includes(`_${code}_`) || 
                                wineCode.includes(`_${codeUpper}_`) ||
@@ -422,22 +546,29 @@ export default function Dashboard() {
                                wineCode.startsWith(`${codeUpper}_`) ||
                                wineCode.endsWith(`_${code}`) ||
                                wineCode.endsWith(`_${codeUpper}`) ||
-                               wineCode === code ||
-                               wineCode === codeUpper ||
                                wineCode.indexOf(`_${code}_`) >= 0 ||
                                wineCode.indexOf(`_${codeUpper}_`) >= 0;
                 }
                 
-                // PRIORITY 2: Check for full variety names (most common in NZL data)
+                // PRIORITY 2: Check if wineCode itself is a full wine name (normalizeWineTypeToCode might have returned full text)
+                // Try to normalize the wineCode and see if it matches
+                if (!matchesWine) {
+                  const normalizedWineCode = normalizeWineTypeToCode(wineCode.toUpperCase()).toLowerCase();
+                  if (normalizedWineCode === code || normalizedWineCode === codeUpper) {
+                    matchesWine = true;
+                  }
+                }
+                
+                // PRIORITY 3: Check for full variety names (most common in NZL data or when normalizeWineTypeToCode returns full text)
                 if (!matchesWine && codeToNameMap[code]) {
                   for (const name of codeToNameMap[code]) {
                     // Create all possible variations
                     const variations = [
                       name,                                    // "pinot gris"
-                      name.replace(/\s+/g, '_'),              // "pinot_gris"
+                      name,              // "pinot_gris"
                       name.replace(/\s+/g, ''),               // "pinotgris"
                       name.toUpperCase(),                      // "PINOT GRIS"
-                      name.toUpperCase().replace(/\s+/g, '_'), // "PINOT_GRIS"
+                      name.toUpperCase(), // "PINOT_GRIS"
                       name.toUpperCase().replace(/\s+/g, '')   // "PINOTGRIS"
                     ];
                     
@@ -468,10 +599,10 @@ export default function Dashboard() {
               if (!matchesWine && wineTypeFilter) {
                 const filterVariations = [
                   wineTypeFilter,
-                  wineTypeFilter.replace(/\s+/g, '_'),
+                  wineTypeFilter,
                   wineTypeFilter.replace(/\s+/g, ''),
                   wineTypeFilter.toUpperCase(),
-                  wineTypeFilter.toUpperCase().replace(/\s+/g, '_')
+                  wineTypeFilter.toUpperCase()
                 ];
                 
                 for (const filterVar of filterVariations) {
@@ -551,8 +682,9 @@ export default function Dashboard() {
             if (countryFilter) {
               const rawMarket = (r.AdditionalAttribute2 || r.Market || "").trim();
               const recordCountry = normalizeCountryCode(rawMarket).toLowerCase();
+              const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
               
-              if (recordCountry !== countryFilter) continue;
+              if (recordCountry !== normalizedFilter) continue;
             }
             
             // Early exit for year filter
@@ -704,10 +836,10 @@ export default function Dashboard() {
                     // Create all possible variations
                     const variations = [
                       name,
-                      name.replace(/\s+/g, '_'),
+                      name,
                       name.replace(/\s+/g, ''),
                       name.toUpperCase(),
-                      name.toUpperCase().replace(/\s+/g, '_'),
+                      name.toUpperCase(),
                       name.toUpperCase().replace(/\s+/g, '')
                     ];
                     
@@ -737,10 +869,10 @@ export default function Dashboard() {
               if (!matchesWine && wineTypeFilter) {
                 const filterVariations = [
                   wineTypeFilter,
-                  wineTypeFilter.replace(/\s+/g, '_'),
+                  wineTypeFilter,
                   wineTypeFilter.replace(/\s+/g, ''),
                   wineTypeFilter.toUpperCase(),
-                  wineTypeFilter.toUpperCase().replace(/\s+/g, '_')
+                  wineTypeFilter.toUpperCase()
                 ];
                 
                 for (const filterVar of filterVariations) {
@@ -759,21 +891,18 @@ export default function Dashboard() {
             filteredExports.push(r);
           }
 
-          console.log(filteredExports);
           // ───────── Stock & Exports Aggregation by Distributor and Wine ─────────
           // Use distributor stock on hand data (filteredDistributorStockOnHand) for actual stock
           // Use sales/depletion data (filteredStock) only for sales predictions
           // Use Map for better performance with large datasets
           // 
           // IMPORTANT: Aggregate distributor stock correctly:
-          // - For each distributor (USA, IRE, NZ, AU-B), calculate total on hand by summing OnHand values
+          // - For each distributor (USA, IRE, NZL, AU-B), calculate total on hand by summing OnHand values
           // - For USA specifically, only sum rows where Product = "Total"
-          // - For others (IRE, NZ, AU-B), sum all OnHand values
+          // - For others (IRE, NZL, AU-B), sum all OnHand values
           const distributorStockByWine = new Map();
           
           // First, group by distributor name (from sheet name) to calculate total stock per distributor
-          const distributorTotalStock = new Map(); // key: distributor name (USA, IRE, NZ, AU-B), value: total stock
-          
           for (let i = 0; i < filteredDistributorStockOnHand.length; i++) {
             const r = filteredDistributorStockOnHand[i];
             let location = (r.Location || r.Distributor || r._sheetName || "Unknown").trim();
@@ -788,7 +917,7 @@ export default function Dashboard() {
             } else if (distributorName === 'IRE' || distributorName.includes('IRE') || distributorName.includes('IRELAND')) {
               distributorName = 'IRE';
             } else if (distributorName === 'NZ' || distributorName === 'NZL' || distributorName.includes('NEW ZEALAND')) {
-              distributorName = 'NZ';
+              distributorName = 'NZL';
             } else if (distributorName === 'AU-B' || distributorName === 'AUB' || distributorName.includes('AU-B')) {
               distributorName = 'AU-B';
             } else {
@@ -799,17 +928,9 @@ export default function Dashboard() {
               } else if (sheetName === 'IRE' || sheetName.includes('IRE')) {
                 distributorName = 'IRE';
               } else if (sheetName === 'NZ' || sheetName === 'NZL') {
-                distributorName = 'NZ';
+                distributorName = 'NZL';
               } else if (sheetName === 'AU-B' || sheetName === 'AUB') {
                 distributorName = 'AU-B';
-              }
-            }
-            
-            // For USA, only sum rows where Product = "Total"
-            if (distributorName === 'USA') {
-              const product = (r.Product || "").trim();
-              if (product.toUpperCase() !== 'TOTAL') {
-                continue; // Skip non-total rows for USA
               }
             }
             
@@ -825,7 +946,7 @@ export default function Dashboard() {
             const key = `${distributorName.toLowerCase()}_${wineCode}`;
             if (!distributorStockByWine.has(key)) {
               distributorStockByWine.set(key, {
-                distributor: distributorName, // Use normalized distributor name (USA, IRE, NZ, AU-B)
+                distributor: distributorName, // Use normalized distributor name (USA, IRE, NZL, AU-B)
                 wineCode: wineCode,
                 stock: 0,
                 brand: r.Brand || "",
@@ -838,7 +959,6 @@ export default function Dashboard() {
             item.stock += onHand;
           }
           
-
           // Group in-transit exports by market, distributor and wine code
           // Key format: `${normalizedMarket}_${customerKey}_${wineCode}` to ensure proper market assignment
           const inTransitByMarketDistributorWine = new Map();
@@ -853,7 +973,7 @@ export default function Dashboard() {
             
             // Get customer/distributor name
             // IMPORTANT: Map country to distributor name (e.g., USA country = USA distributor)
-            // Distributor name should match the sheet names: USA, IRE, NZ, AU-B
+            // Distributor name should match the sheet names: USA, IRE, NZL, AU-B
             let distributorName = "";
             
             // First, try to get distributor from country/market
@@ -862,7 +982,7 @@ export default function Dashboard() {
             } else if (normalizedMarket === 'ire' || normalizedMarket === 'ireland') {
               distributorName = 'IRE';
             } else if (normalizedMarket === 'nzl' || normalizedMarket === 'nz' || normalizedMarket === 'new zealand') {
-              distributorName = 'NZ';
+              distributorName = 'NZL';
             } else if (normalizedMarket === 'au-b' || normalizedMarket === 'aub') {
               distributorName = 'AU-B';
             } else {
@@ -884,7 +1004,7 @@ export default function Dashboard() {
               } else if (customerUpper === 'IRE' || customerUpper.includes('IRE') || customerUpper.includes('IRELAND')) {
                 distributorName = 'IRE';
               } else if (customerUpper === 'NZ' || customerUpper === 'NZL' || customerUpper.includes('NEW ZEALAND')) {
-                distributorName = 'NZ';
+                distributorName = 'NZL';
               } else if (customerUpper === 'AU-B' || customerUpper === 'AUB' || customerUpper.includes('AU-B')) {
                 distributorName = 'AU-B';
               } else {
@@ -905,7 +1025,7 @@ export default function Dashboard() {
             if (!wineCode) {
               // Try to construct from Brand and Variety if available
               if (e.Brand && e.VarietyCode) {
-                const constructedCode = `${e.BrandCode || e.Brand}_${e.VarietyCode}_${e.Vintage || ""}`.toUpperCase().replace(/\s+/g, '_');
+                const constructedCode = `${e.BrandCode || e.Brand}_${e.VarietyCode}_${e.Vintage || ""}`.toUpperCase();
                 if (constructedCode && constructedCode !== '_') {
                   // Map country to distributor name (same logic as above)
                   let distributorNameForConstructed = "";
@@ -914,7 +1034,7 @@ export default function Dashboard() {
                   } else if (normalizedMarket === 'ire' || normalizedMarket === 'ireland') {
                     distributorNameForConstructed = 'IRE';
                   } else if (normalizedMarket === 'nzl' || normalizedMarket === 'nz' || normalizedMarket === 'new zealand') {
-                    distributorNameForConstructed = 'NZ';
+                    distributorNameForConstructed = 'NZL';
                   } else if (normalizedMarket === 'au-b' || normalizedMarket === 'aub') {
                     distributorNameForConstructed = 'AU-B';
                   } else {
@@ -946,7 +1066,7 @@ export default function Dashboard() {
             if (!inTransitByMarketDistributorWine.has(key)) {
               inTransitByMarketDistributorWine.set(key, {
                 market: normalizedMarket,
-                distributor: distributorName, // Use normalized distributor name (USA, IRE, NZ, AU-B)
+                distributor: distributorName, // Use normalized distributor name (USA, IRE, NZL, AU-B)
                 wineCode: wineCode,
                 inTransit: 0,
                 brand: e.Brand || "",
@@ -1018,7 +1138,7 @@ export default function Dashboard() {
           const exportsByWineCode = new Map();
           for (let i = 0; i < filteredExports.length; i++) {
             const e = filteredExports[i];
-            const wineCode = (e.AdditionalAttribute3 || "").toUpperCase().trim() || 
+            const wineCode = (e.Vintage || "").toUpperCase().trim() || 
                             (e.Stock || "").toUpperCase().trim();
             if (!wineCode) continue;
             exportsByWineCode.set(wineCode, (exportsByWineCode.get(wineCode) || 0) + (parseFloat(e.cases) || 0));
@@ -1399,10 +1519,10 @@ export default function Dashboard() {
                     // Create all possible variations
                     const variations = [
                       name,
-                      name.replace(/\s+/g, '_'),
+                      name,
                       name.replace(/\s+/g, ''),
                       name.toUpperCase(),
-                      name.toUpperCase().replace(/\s+/g, '_'),
+                      name.toUpperCase(),
                       name.toUpperCase().replace(/\s+/g, '')
                     ];
                     
@@ -1430,10 +1550,10 @@ export default function Dashboard() {
               if (!matchesWine && wineTypeFilter) {
                 const filterVariations = [
                   wineTypeFilter,
-                  wineTypeFilter.replace(/\s+/g, '_'),
+                  wineTypeFilter,
                   wineTypeFilter.replace(/\s+/g, ''),
                   wineTypeFilter.toUpperCase(),
-                  wineTypeFilter.toUpperCase().replace(/\s+/g, '_')
+                  wineTypeFilter.toUpperCase()
                 ];
                 
                 for (const filterVar of filterVariations) {
@@ -2123,32 +2243,79 @@ export default function Dashboard() {
               return false;
             }
             
-            // Filter by country
-            if (countryFilter && countryFilter !== "all") {
-              const itemCountry = (item.Market || item.AdditionalAttribute2 || item.market || item.additionalAttribute2 || "").toLowerCase();
-              if (itemCountry !== countryFilter.toLowerCase()) {
-                return false;
-              }
-            }
+            // NOTE: Do NOT filter by country - warehouse stock is the main stock that supplies all distributors
+            // The country filter should only affect distributor stock and sales data, not warehouse stock
             
-            // Filter by wine type
-            if (wineTypeFilter && wineTypeFilter !== "all") {
+            // Filter by wine type (if selected)
+            if (wineTypeFilter && wineTypeFilter !== "all" && wineTypeCode) {
               const itemVariety = (item.VarietyCode || item.ProductName || item.variety || item.productName || "").toLowerCase();
               const itemCode = (item.Code || item.AdditionalAttribute3 || item.code || item.additionalAttribute3 || "").toLowerCase();
-              const filterVariations = [
-                wineTypeFilter.toLowerCase(),
-                wineTypeFilter.toLowerCase().replace(/\s+/g, '_'),
-                wineTypeFilter.toLowerCase().replace(/\s+/g, '')
-              ];
               
-              const matchesVariety = filterVariations.some(fv => 
-                itemVariety.includes(fv) || fv.includes(itemVariety)
-              );
-              const matchesCode = filterVariations.some(fv => 
-                itemCode.includes(fv) || fv.includes(itemCode)
-              );
+              // Use the same sophisticated matching logic as other filters
+              const code = wineTypeCode.toLowerCase();
+              const codeUpper = code.toUpperCase();
               
-              if (!matchesVariety && !matchesCode) {
+              let matchesWine = false;
+              
+              // Check exact match
+              if (!matchesWine) {
+                matchesWine = itemCode === code ||
+                             itemCode === codeUpper ||
+                             itemCode.trim() === code ||
+                             itemCode.trim() === codeUpper;
+              }
+              
+              // Check compound formats
+              if (!matchesWine) {
+                matchesWine = itemCode.includes(`_${code}_`) || 
+                             itemCode.includes(`_${codeUpper}_`) ||
+                             itemCode.startsWith(`${code}_`) || 
+                             itemCode.startsWith(`${codeUpper}_`) ||
+                             itemCode.endsWith(`_${code}`) ||
+                             itemCode.endsWith(`_${codeUpper}`);
+              }
+              
+              // Normalize and check
+              if (!matchesWine) {
+                const normalizedItemCode = normalizeWineTypeToCode(itemCode.toUpperCase()).toLowerCase();
+                if (normalizedItemCode === code || normalizedItemCode === codeUpper) {
+                  matchesWine = true;
+                }
+              }
+              
+              // Check full variety names
+              const codeToNameMap = {
+                'sab': ['sauvignon blanc', 'sauvignon', 'sab'],
+                'pin': ['pinot noir', 'pin'],
+                'chr': ['chardonnay', 'chr'],
+                'pig': ['pinot gris', 'pinot grigio', 'pig'],
+                'rose': ['rose', 'rosé'],
+                'gru': ['gruner veltliner', 'gruner', 'gru'],
+                'lhs': ['late harvest sauvignon', 'lhs'],
+                'riesling': ['riesling']
+              };
+              
+              if (!matchesWine && codeToNameMap[code]) {
+                for (const name of codeToNameMap[code]) {
+                  const variations = [
+                    name,
+                    name.replace(/\s+/g, ''),
+                    name.toUpperCase(),
+                    name.toUpperCase().replace(/\s+/g, '')
+                  ];
+                  
+                  for (const variation of variations) {
+                    if (itemCode.includes(variation.toLowerCase()) || 
+                        itemVariety.includes(variation.toLowerCase())) {
+                      matchesWine = true;
+                      break;
+                    }
+                  }
+                  if (matchesWine) break;
+                }
+              }
+              
+              if (!matchesWine) {
                 return false;
               }
             }
@@ -2167,19 +2334,45 @@ export default function Dashboard() {
             const distributorName = (item.AdditionalAttribute2 || item.additionalAttribute2 || item.Market || item.market || "").trim();
             if (!distributorName) return;
             
-            // Get wine code
-            const wineCode = (item.Code || item.AdditionalAttribute3 || item.code || item.additionalAttribute3 || "").toUpperCase();
+            // Get wine code - PRIORITY: Use AdditionalAttribute3 (wine type code) first, not Code (product code) or ProductName (brand)
+            // AdditionalAttribute3 should contain the wine type code (SAB, PIN, CHR, etc.) from normalizeWarehouseStockData
+            let wineCode = (item.AdditionalAttribute3 || item.additionalAttribute3 || "").toUpperCase().trim();
+            
+            // If AdditionalAttribute3 is empty, try to get it from VarietyCode
+            if (!wineCode) {
+              wineCode = (item.VarietyCode || item.varietyCode || "").toUpperCase().trim();
+            }
+            
+            // If still empty, try to normalize from Variety field
+            if (!wineCode && item.Variety) {
+              wineCode = normalizeWineTypeToCode(item.Variety).toUpperCase();
+            }
+            
+            // Skip if we still don't have a valid wine type code
             if (!wineCode) return;
             
             // Create key: distributor_wineCode
             const key = `${distributorName.toLowerCase()}_${wineCode}`;
             
+            // Get wine type name for display (use Variety or map from code)
+            const wineTypeNameMap = {
+              'SAB': 'Sauvignon Blanc',
+              'PIN': 'Pinot Noir',
+              'CHR': 'Chardonnay',
+              'PIG': 'Pinot Gris',
+              'ROS': 'Rose',
+              'GRU': 'Gruner Veltliner',
+              'LHS': 'Late Harvest Sauvignon',
+              'RIES': 'Riesling'
+            };
+            const wineTypeName = wineTypeNameMap[wineCode] || item.Variety || wineCode;
+            
             if (!warehouseStockByDistributorWine.has(key)) {
               warehouseStockByDistributorWine.set(key, {
                 distributor: distributorName, // Distributor name from AdditionalAttribute2
-                wineCode: wineCode,
+                wineCode: wineCode, // Wine type code (SAB, PIN, etc.)
                 brand: item.Brand || item.brand || "",
-                variety: item.Variety || item.ProductName || item.variety || item.productName || "",
+                variety: wineTypeName, // Wine type name for display
                 country: item.Market || item.AdditionalAttribute2 || item.market || item.additionalAttribute2 || "",
                 onHand: 0,
                 allocated: 0,
@@ -2198,14 +2391,16 @@ export default function Dashboard() {
           });
           
           // Convert to wine-only map for backward compatibility (grouping by wine across all distributors)
+          // Group by wine type name (variety) for display, not wineCode
           const warehouseStockByWine = new Map();
           warehouseStockByDistributorWine.forEach((wineStock, key) => {
-            const wineCode = wineStock.wineCode;
-            if (!warehouseStockByWine.has(wineCode)) {
-              warehouseStockByWine.set(wineCode, {
-                wineCode: wineCode,
+            // Use wine type name (variety) as the key for grouping, not wineCode
+            const wineTypeName = wineStock.variety || wineStock.wineCode;
+            if (!warehouseStockByWine.has(wineTypeName)) {
+              warehouseStockByWine.set(wineTypeName, {
+                wineCode: wineStock.wineCode,
                 brand: wineStock.brand,
-                variety: wineStock.variety,
+                variety: wineTypeName, // Use wine type name for display
                 country: wineStock.country,
                 onHand: 0,
                 allocated: 0,
@@ -2213,7 +2408,7 @@ export default function Dashboard() {
                 available: 0
               });
             }
-            const aggregated = warehouseStockByWine.get(wineCode);
+            const aggregated = warehouseStockByWine.get(wineTypeName);
             aggregated.onHand += wineStock.onHand;
             aggregated.allocated += wineStock.allocated;
             aggregated.pending += wineStock.pending;
@@ -2430,9 +2625,15 @@ export default function Dashboard() {
     // Debounce filter changes by 150ms to prevent lag
     filterTimeoutRef.current = setTimeout(() => {
       setFilters((prev) => {
-        // If country is changing, also reset distributor to 'all'
+        // If country is changing, reset appropriate filters
         if (type === 'country') {
-          return { ...prev, [type]: value, distributor: 'all' };
+          if (value === 'usa') {
+            // When switching to USA, reset distributor and state
+            return { ...prev, [type]: value, distributor: 'all', state: 'all' };
+          } else {
+            // When switching away from USA, reset state filter
+            return { ...prev, [type]: value, distributor: 'all', state: 'all' };
+          }
         }
         return { ...prev, [type]: value };
       });

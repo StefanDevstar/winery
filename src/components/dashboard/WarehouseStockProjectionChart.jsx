@@ -68,12 +68,6 @@ export default function WarehouseStockProjectionChart({
     });
   }, [data]);
   
-  // Debug: Log transformed chart data
-  console.log("WarehouseStockProjectionChart - chartData:", {
-    length: chartData.length,
-    firstItem: chartData[0],
-    allKeys: chartData.length > 0 ? Object.keys(chartData[0]) : []
-  });
 
   const customTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {

@@ -159,7 +159,6 @@ export function parseExportsCSV(text) {
 
   // Check if "company" is found in the text
   if (companyIndex === -1) {
-    console.error(`Keyword "${keyword}" not found in the input text.`);
     return [];
   }
 
@@ -176,7 +175,6 @@ export function parseExportsCSV(text) {
 
   // Handle any parsing errors
   if (parseResult.errors.length > 0) {
-    console.error('CSV Parsing errors:', parseResult.errors);
   }
 
   // Process and clean the parsed data
@@ -294,7 +292,6 @@ export function parseExcel(arrayBuffer) {
     
     return sheetsData;
   } catch (error) {
-    console.error('Error parsing Excel file:', error);
     throw new Error(`Failed to parse Excel file: ${error.message}`);
   }
 }
@@ -384,6 +381,70 @@ function getCountryFromCompany(companyName) {
  * @param {string} countryCode - Country code from Excel (can be US, USA, NZ, AU, etc.)
  * @returns {string} - Normalized country code matching filter values (usa, nzl, au, etc.)
  */
+/**
+ * Maps wine type text to wine code (e.g., "SAUVIGNON BLANC" -> "SAB")
+ * @param {string} wineTypeText - Wine type text to convert
+ * @returns {string} - Wine code (SAB, PIN, CHR, etc.) or original text if no match
+ */
+export function normalizeWineTypeToCode(wineTypeText) {
+  if (!wineTypeText || typeof wineTypeText !== 'string') return '';
+  
+  const normalized = wineTypeText.trim().toUpperCase();
+  
+  // Wine type text to code mapping
+  const wineTypeMap = {
+    'SAUVIGNON BLANC': 'SAB',
+    'PINOT NOIR': 'PIN',
+    'CHARDONNAY': 'CHR',
+    'ROSE': 'ROS',
+    'PINOT GRIS': 'PIG',
+    'GRUNER VELTLINER': 'GRU',
+    'LATE HARVEST SAUVIGNON': 'LHS',
+    'RIESLING': 'RIES'
+  };
+  
+  // Direct match
+  if (wineTypeMap[normalized]) {
+    return wineTypeMap[normalized];
+  }
+  
+  // Check if text contains any wine type (for partial matches)
+  for (const [wineType, code] of Object.entries(wineTypeMap)) {
+    if (normalized.includes(wineType) || wineType.includes(normalized)) {
+      return code;
+    }
+  }
+  
+  // Check for common variations
+  if (normalized.includes('SAUVIGNON') || normalized.includes('SAUV BLANC')) {
+    return 'SAB';
+  }
+  if (normalized.includes('PINOT NOIR') || normalized.includes('PINOT')) {
+    if (normalized.includes('GRIS') || normalized.includes('GRIGIO')) {
+      return 'PIG';
+    }
+    return 'PIN';
+  }
+  if (normalized.includes('CHARDONNAY') || normalized.includes('CHARD')) {
+    return 'CHR';
+  }
+  if (normalized.includes('ROSE') || normalized.includes('ROSÉ')) {
+    return 'ROS';
+  }
+  if (normalized.includes('GRUNER') || normalized.includes('GRÜNER') || normalized.includes('VELTLINER')) {
+    return 'GRU';
+  }
+  if (normalized.includes('LATE HARVEST')) {
+    return 'LHS';
+  }
+  if (normalized.includes('RIESLING')) {
+    return 'RIESLING';
+  }
+  
+  // Return original if no match found
+  return normalized;
+}
+
 export function normalizeCountryCode(countryCode) {
   if (!countryCode || typeof countryCode !== 'string') return '';
   
@@ -516,19 +577,6 @@ export function parseProductSKU(sku) {
   // Remove values like #2 or strip
   const filteredParts = parts.filter(p => !p.match(/^#\d+$/i) && !p.toLowerCase().includes('strip'));
   
-  if (filteredParts.length < 4) {
-    // Not enough parts, return what we have
-    return {
-      brand: filteredParts[0] || '',
-      vintage: filteredParts[1] || '',
-      variety: filteredParts[2] || '',
-      market: filteredParts[3] || '',
-      caseSize: filteredParts[4] || '',
-      bottleVolume: filteredParts[5] || '',
-      fullSKU: cleaned
-    };
-  }
-  
   // Brand mapping
   const brandMap = {
     'JT': 'Jules Taylor',
@@ -545,8 +593,114 @@ export function parseProductSKU(sku) {
     'PIN': 'Pinot Noir',
     'PIG': 'Pinot Gris',
     'GRU': 'Gruner Veltliner',
-    'LHS': 'Late Harvest Sauvignon'
+    'LHS': 'Late Harvest Sauvignon',
+    'RIES': 'RIESLING'
+
   };
+  
+  // Find variety by searching filteredParts for variety codes or full wine type names
+  const varietyCodes = Object.keys(varietyMap);
+  const wineTypeMap = {
+    'SAUVIGNON BLANC': 'SAB',
+    'PINOT NOIR': 'PIN',
+    'CHARDONNAY': 'CHR',
+    'ROSE': 'ROS',
+    'PINOT GRIS': 'PIG',
+    'GRUNER VELTLINER': 'GRU',
+    'LATE HARVEST SAUVIGNON': 'LHS',
+    'RIESLING': 'RIES'
+  };
+  const wineTypeNames = Object.keys(wineTypeMap);
+  
+  let foundVariety = '';
+  let foundVarietyIndex = -1;
+  
+  // First, check for exact matches with variety codes (SAB, PIN, etc.)
+  for (let i = 0; i < filteredParts.length; i++) {
+    const part = filteredParts[i].toUpperCase();
+    // Check if this part matches any variety code
+    if (varietyCodes.includes(part)) {
+      foundVariety = filteredParts[i];
+      foundVarietyIndex = i;
+      break;
+    }
+  }
+  
+  // If not found, check for full wine type names in single parts (SAUVIGNON BLANC, PINOT NOIR, etc.)
+  if (!foundVariety) {
+    for (let i = 0; i < filteredParts.length; i++) {
+      const part = filteredParts[i].toUpperCase();
+      // Check if this part matches any full wine type name
+      for (const wineTypeName of wineTypeNames) {
+        if (part === wineTypeName || part.includes(wineTypeName) || wineTypeName.includes(part)) {
+          // Convert full name to code
+          foundVariety = wineTypeMap[wineTypeName];
+          foundVarietyIndex = i;
+          break;
+        }
+      }
+      if (foundVariety) break;
+    }
+  }
+  
+  // Also check for full wine type names split across multiple parts (e.g., "SAUVIGNON BLANC" might be split)
+  if (!foundVariety && filteredParts.length > 1) {
+    // Check two consecutive parts
+    for (let i = 0; i < filteredParts.length - 1; i++) {
+      const combined = `${filteredParts[i]} ${filteredParts[i + 1]}`.toUpperCase();
+      for (const wineTypeName of wineTypeNames) {
+        if (combined === wineTypeName || combined.includes(wineTypeName) || wineTypeName.includes(combined)) {
+          foundVariety = wineTypeMap[wineTypeName];
+          foundVarietyIndex = i;
+          break;
+        }
+      }
+      if (foundVariety) break;
+    }
+    
+    // Check three consecutive parts (for "LATE HARVEST SAUVIGNON")
+    if (!foundVariety && filteredParts.length > 2) {
+      for (let i = 0; i < filteredParts.length - 2; i++) {
+        const combined = `${filteredParts[i]} ${filteredParts[i + 1]} ${filteredParts[i + 2]}`.toUpperCase();
+        for (const wineTypeName of wineTypeNames) {
+          if (combined === wineTypeName || combined.includes(wineTypeName) || wineTypeName.includes(combined)) {
+            foundVariety = wineTypeMap[wineTypeName];
+            foundVarietyIndex = i;
+            break;
+          }
+        }
+        if (foundVariety) break;
+      }
+    }
+  }
+  
+  // If still not found, try to find by checking if part contains variety code
+  if (!foundVariety) {
+    for (let i = 0; i < filteredParts.length; i++) {
+      const part = filteredParts[i].toUpperCase();
+      for (const code of varietyCodes) {
+        if (part.includes(code) || code.includes(part)) {
+          foundVariety = filteredParts[i];
+          foundVarietyIndex = i;
+          break;
+        }
+      }
+      if (foundVariety) break;
+    }
+  }
+  
+  if (filteredParts.length < 4) {
+    // Not enough parts, return what we have (using found variety if available)
+    return {
+      brand: filteredParts[0] || '',
+      vintage: filteredParts[1] || '',
+      variety: foundVariety || '',
+      market: filteredParts[3] || '',
+      caseSize: filteredParts[4] || '',
+      bottleVolume: filteredParts[5] || '',
+      fullSKU: cleaned
+    };
+  }
   
   // Case size mapping
   const caseSizeMap = {
@@ -563,19 +717,41 @@ export function parseProductSKU(sku) {
     '750ML': 'Regular'
   };
   
+  // Use the variety we found earlier (or fallback to filteredParts[2])
+  const variety = foundVariety || '';
+  const varietyIndex = foundVarietyIndex >= 0 ? foundVarietyIndex : 2;
+  
+  // Assign other parts based on variety position
+  // Brand is typically first (index 0)
   const brand = filteredParts[0] || '';
-  const vintage = filteredParts[1] || '';
-  const variety = filteredParts[2] || '';
-  const market = filteredParts[3] || '';
-  const caseSize = filteredParts[4] || '';
-  const bottleVolume = filteredParts[5] || '';
+  
+  // Vintage is typically second (index 1), but could be different if variety is at index 1
+  let vintage = '';
+  if (varietyIndex === 1) {
+    // If variety is at index 1, vintage might be at index 0 or 2
+    vintage = filteredParts[0] && /^\d{2}$/.test(filteredParts[0]) ? filteredParts[0] : (filteredParts[2] || '');
+  } else {
+    vintage = filteredParts[1] || '';
+  }
+  
+  // Market is typically after variety
+  let market = '';
+  if (varietyIndex >= 0 && varietyIndex < filteredParts.length - 1) {
+    market = filteredParts[varietyIndex + 1] || '';
+  } else {
+    market = filteredParts[3] || '';
+  }
+  
+  // Case size and bottle volume are typically at the end
+  const caseSize = filteredParts[filteredParts.length - 2] || filteredParts[4] || '';
+  const bottleVolume = filteredParts[filteredParts.length - 1] || filteredParts[5] || '';
   
   // Handle market codes that appear twice (use second one)
   let finalMarket = market;
   if (filteredParts.length > 4) {
     // Check if there's a second market code
     const potentialSecondMarket = filteredParts.slice(4).find(p => 
-      ['KO', 'ROW', 'GR', 'UK', 'C/S', 'PHI', 'UEA', 'SG', 'TAI', 'POL', 'HK', 'MAL', 'CA', 'NE', 'TH', 'DE', 'US', 'JPN', 'AU/B', 'AU/C', 'IRE', 'NZ'].includes(p.toUpperCase())
+      ['KO', 'ROW', 'GR', 'UK', 'C/S', 'PHI', 'UEA', 'SG', 'TAI', 'POL', 'HK', 'MAL', 'CA', 'NE', 'TH', 'DE', 'US', 'JPN', 'AU/B', 'AU/C', 'IRE', 'NZ', 'NZL'].includes(p.toUpperCase())
     );
     if (potentialSecondMarket) {
       finalMarket = potentialSecondMarket;
@@ -660,9 +836,9 @@ function parseNZLSheet(records) {
       
       return {
         AdditionalAttribute2: normalizeCountryCode(country), // Normalized country code (nzl)
-        AdditionalAttribute3: `${brand}_${variety}`.toUpperCase().replace(/\s+/g, '_'), // Wine code
+        AdditionalAttribute3: normalizeWineTypeToCode(variety), // Wine code (SAB, PIN, etc.)
         ProductName: `${brand} ${variety}`.trim(), // Product name
-        Location: channel.toUpperCase().replace(/\s+/g, '_'), // Location (Channel only, no country prefix)
+        Location: channel.toUpperCase(), // Location (Channel only, no country prefix)
         Available: sales, // Sales quantity (depletion)
         _month: month,
         _year: year,
@@ -701,7 +877,7 @@ function parseAUBSheet(records) {
       
       return {
         AdditionalAttribute2: 'au-b', // Preserve AU-B as separate country code
-        AdditionalAttribute3: wineName.toUpperCase().replace(/\s+/g, '_'), // Wine code
+        AdditionalAttribute3: normalizeWineTypeToCode(variety || wineName), // Wine code (SAB, PIN, etc.)
         ProductName: wineName, // Product name
         Location: state ? `${state}_${customer}`.substring(0, 50) : customer.substring(0, 50), // Location (State_Customer)
         Available: quantity, // Quantity sold (depletion)
@@ -729,14 +905,17 @@ function parseAUCSheet(records) {
     .filter(r => r.Banner && r.Item && r['Sales Qty (Singles)'])
     .map(r => {
       const banner = String(r.Banner || '').trim();
-      const item = String(r.Item || '').trim();
+      // Get the third column value (index 2, 0-based)
+      const columnKeys = Object.keys(r);
+      const thirdColumnKey = columnKeys.length > 2 ? columnKeys[2] : null;
+      const thirdColumnValue = thirdColumnKey ? String(r[thirdColumnKey] || '').trim() : '';
       const salesQty = parseFloat(String(r['Sales Qty (Singles)'] || '0').replace(/,/g, '')) || 0;
       
       return {
         AdditionalAttribute2: 'au-c', // Preserve AU-C as separate country code
-        AdditionalAttribute3: item, // Item code
-        ProductName: `Item ${item}`, // Product name
-        Location: banner.toUpperCase().replace(/\s+/g, '_'), // Location (Banner)
+        AdditionalAttribute3: normalizeWineTypeToCode(thirdColumnValue), // Wine code (SAB, PIN, etc.)
+        ProductName: `Item ${thirdColumnValue}`, // Product name
+        Location: banner.toUpperCase(), // Location (Banner)
         Available: salesQty, // Sales quantity (depletion)
         _banner: banner,
         _sheetName: 'AU-C'
@@ -819,9 +998,9 @@ function parseUSASheet(records) {
       if (value > 0) {
           normalized.push({
             AdditionalAttribute2: normalizeCountryCode('USA'), // Normalized country code (usa)
-            AdditionalAttribute3: wineName.toUpperCase().replace(/\s+/g, '_'), // Wine code
+            AdditionalAttribute3: normalizeWineTypeToCode(wineName), // Wine code (SAB, PIN, etc.)
             ProductName: wineName.trim(), // Product name
-            Location: state.toUpperCase().replace(/\s+/g, '_'), // Location (State)
+            Location: state.toUpperCase(), // Location (State)
             Available: value, // Monthly sales (depletion)
             _month: month,
             _year: year
@@ -895,7 +1074,7 @@ function parseIRESheet(records) {
     }
     
     // Get product name (prefer SKU for code, Product for name)
-    const productCode = sku || product.toUpperCase().replace(/\s+/g, '_');
+    const productCode = product.toUpperCase();
     const productName = product || sku;
     
     // Process monthly columns (Jan-25 through Dec-25)
@@ -909,7 +1088,7 @@ function parseIRESheet(records) {
       if (salesValue > 0) {
         normalized.push({
           AdditionalAttribute2: 'ire', // Ireland country code
-          AdditionalAttribute3: productCode.toUpperCase().replace(/\s+/g, '_'), // Wine code (SKU or product)
+          AdditionalAttribute3: normalizeWineTypeToCode(productCode), // Wine code (SAB, PIN, etc.)
           ProductName: productName.trim(), // Product name
           Location: 'IRELAND', // Location (all from Ireland)
           Available: salesValue, // Monthly sales (depletion)
@@ -952,7 +1131,6 @@ function parseIRESheet(records) {
  */
 export function normalizeSalesData(records, sheetName = '') {
   if (!Array.isArray(records) || records.length === 0) return [];
-  
   // Use sheet-specific parsers
   const upperSheetName = sheetName.toUpperCase();
   
@@ -971,12 +1149,11 @@ export function normalizeSalesData(records, sheetName = '') {
   // Fallback: Generic parser for unknown sheet structures
   const columnMappings = {
     'AdditionalAttribute2': ['AdditionalAttribute2', 'Country', 'Country Code', 'Region', 'Market', 'CountryCode'],
-    'AdditionalAttribute3': ['AdditionalAttribute3', 'Wine Code', 'WineCode', 'Product Code', 'ProductCode', 'SKU', 'Code', 'Item'],
+    'AdditionalAttribute3': ['AdditionalAttribute3', 'Variety', 'Wine Name', 'Product Code', 'Wines', 'SKU', 'Code', 'Item'],
     'ProductName': ['ProductName', 'Product Name', 'Product', 'Wine Name', 'WineName', 'Item', 'Description', 'Brand', 'Variety'],
     'Location': ['Location', 'Distributor', 'Distributor Name', 'DistributorName', 'Warehouse', 'Site', 'Customer/Project', 'Banner', 'State', 'Channel'],
     'Available': ['Available', 'Available Stock', 'AvailableStock', 'Stock', 'Quantity', 'Qty', 'On Hand', 'OnHand', 'Current Stock', 'CurrentStock', 'Quantity - Cartons', 'Month Sales 9LE', 'Sales Qty (Singles)']
   };
-  
   const findColumnValue = (record, possibleNames) => {
     const recordKeys = Object.keys(record);
     for (const name of possibleNames) {
@@ -994,7 +1171,6 @@ export function normalizeSalesData(records, sheetName = '') {
     }
     return '';
   };
-  
   return records
     .filter(r => {
       // Only include records that have at least some data
@@ -1161,19 +1337,6 @@ export function normalizeExportsData(records, sheetName = '') {
       'Entry Sent to WWM'
     ]);
     const freightForwarderCol = findColumn(['Freight Forwarder', 'Freight', 'Forwarder', 'Carrier', 'Shipping Company']);
-    // Debug: Log found columns to help diagnose issues
-    if (headerRowIndex >= 0) {
-      console.log('Found columns:', {
-        productDesc: productDescCol,
-        customer: customerCol,
-        cases: casesCol,
-        status: statusCol,
-        dateShipped: dateShippedCol,
-        dateArrival: dateArrivalCol,
-        freightForwarder: freightForwarderCol,
-        headers: Object.keys(headers).map(k => ({ key: k, value: String(headers[k] || '') }))
-      });
-    }
 
     // Process data rows
     for (let i = headerRowIndex + 1; i < records.length; i++) {
@@ -1335,7 +1498,7 @@ export function normalizeExportsData(records, sheetName = '') {
         
         // For Dashboard compatibility
         AdditionalAttribute2: countryCode, // Normalized country code from company mapping
-        AdditionalAttribute3: `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase().replace(/\s+/g, '_'),
+        AdditionalAttribute3: `${skuParts.vintage}`.toUpperCase(),
         
         _sheetName: sheetName,
         _originalData: row
@@ -1484,7 +1647,7 @@ export function normalizeWarehouseStockData(records, sheetName = '') {
           
           // Additional fields for Dashboard compatibility
           AdditionalAttribute2: skuParts.market, // Normalized country code
-          AdditionalAttribute3: `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase().replace(/\s+/g, '_'),
+          AdditionalAttribute3: `${skuParts.varietyCode}`.toUpperCase(),
           Location: 'WineWorks Marlborough', // Default location
           
           _sheetName: sheetName,
@@ -1539,8 +1702,6 @@ export function normalizeDistributorStockOnHandData(records, sheetName = '') {
   
   const headerKeys = Object.keys(firstRecord);
   
-  // Debug: Log available columns for troubleshooting
-  console.log(`[normalizeDistributorStockOnHandData] Sheet: ${sheetName}, Available columns:`, headerKeys);
   
   // Find column keys by matching header names (case-insensitive, handles spaces/variations)
   const findColumn = (searchTerms) => {
@@ -1559,7 +1720,6 @@ export function normalizeDistributorStockOnHandData(records, sheetName = '') {
         return false;
       });
       if (key !== undefined) {
-        console.log(`[normalizeDistributorStockOnHandData] Found column "${key}" for search term "${term}"`);
         return key;
       }
     }
@@ -1580,32 +1740,28 @@ export function normalizeDistributorStockOnHandData(records, sheetName = '') {
   let wineTypeCol = null;
   
   if (upperSheetName === 'NZ' || upperSheetName === 'NZL' || sheetName.includes('NZ')) {
-    // NZ sheet: Column 6 (index 5, 0-based)
+    // NZL sheet: Column 6 (index 5, 0-based)
     if (headerKeys.length > 5) {
       wineTypeCol = headerKeys[1];
       onHandCol = headerKeys[4];
-      console.log(`[normalizeDistributorStockOnHandData] NZ sheet: Using column 6 (index 5): "${onHandCol}"`);
     }
   } else if (upperSheetName === 'USA' || sheetName.includes('USA')) {
-    // USA sheet: Last column
+    // USA sheet: Last column for On Hand, second column (index 1) is State
     if (headerKeys.length > 0) {
       wineTypeCol = headerKeys[3];
       onHandCol = headerKeys[4];
-      console.log(`[normalizeDistributorStockOnHandData] USA sheet: Using last column: "${onHandCol}"`);
     }
   } else if (upperSheetName === 'AU-B' || upperSheetName === 'AUB' || sheetName.includes('AU-B')) {
     // AU-B sheet: Last column
     if (headerKeys.length > 0) {
       wineTypeCol = headerKeys[1];
       onHandCol = headerKeys[headerKeys.length - 1];
-      console.log(`[normalizeDistributorStockOnHandData] AU-B sheet: Using last column: "${onHandCol}"`);
     }
   } else if (upperSheetName === 'IRE' || sheetName.includes('IRE')) {
     // IRE sheet: 4th column (index 3)
     if (headerKeys.length > 3) {
       wineTypeCol = headerKeys[2];
       onHandCol = headerKeys[3];
-      console.log(`[normalizeDistributorStockOnHandData] IRE sheet: Using 4th column (index 3): "${onHandCol}"`);
     }
   } else {
     wineTypeCol = findColumn(['Description', 'Product']);
@@ -1615,11 +1771,8 @@ export function normalizeDistributorStockOnHandData(records, sheetName = '') {
   
   const countryCol = findColumn(['Country', 'Market', 'Region', 'Country Code', 'AdditionalAttribute2', 'Market Code']);
   
-  // Debug: Log found columns
-  console.log(`[normalizeDistributorStockOnHandData] Sheet: ${sheetName}, Found columns - Product: ${productCol}, SKU: ${skuCol}, OnHand: ${onHandCol}, Country: ${countryCol}`);
-  
   if (!onHandCol) {
-    console.warn(`[normalizeDistributorStockOnHandData] WARNING: Could not find "On Hand" column in sheet "${sheetName}". Available columns:`, headerKeys);
+    // Could not find "On Hand" column - will use fallback logic
   }
   
   // Helper function to parse numeric values, handling currency symbols and formatting
@@ -1655,7 +1808,6 @@ export function normalizeDistributorStockOnHandData(records, sheetName = '') {
                val.includes('DESCRIPTION');
       });
       if (isHeaderRow && i === 0) {
-        console.log(`[normalizeDistributorStockOnHandData] Skipping header row at index ${i}`);
         continue; // Skip first row if it's a header
       }
     }
@@ -1671,68 +1823,55 @@ export function normalizeDistributorStockOnHandData(records, sheetName = '') {
     // Get stock on hand - this is the critical field
     const onHand = onHandCol ? parseNumericValue(row[onHandCol]) : 0;
     const wineType = wineTypeCol ? String(row[wineTypeCol] || '').trim() : '';
+    
+    // For USA data, get state from second column (index 1)
+    let state = '';
+    if ((upperSheetName === 'USA' || sheetName.includes('USA')) && headerKeys.length > 1) {
+      state = String(row[headerKeys[1]] || '').trim();
+    }
   
     // Parse SKU to extract components
     const skuParts = parseProductSKU(sku || product);
     
-    // Extract wine type code from wineType field (e.g., "JULES TAYLOR SAUVIGNON BLANC" -> "SAB")
-    // Wine name mapping (reverse lookup: full name -> code) - matches FilterBar.jsx wineNameMap
-    const wineNameMap = {
-      'Sauvignon Blanc': 'SAB',
-      'Pinot Noir': 'PIN',
-      'Chardonnay': 'CHR',
-      'Rose': 'ROS',
-      'Rosé': 'ROS', // Include accented version
-      'Pinot Gris': 'PIG',
-      'Pinot Grigio': 'PIG', // Alternative name
-      'Gruner Veltliner': 'GRU',
-      'Gruner': 'GRU', // Short form
-      'Late Harvest Sauvignon': 'LHS',
-      'Riesling': 'RIESLING'
-    };
+    // Extract wine type code from wineType field using normalizeWineTypeToCode
+    // This handles variations like "SAUVIGNON BLANC", "JULES TAYLOR SAUVIGNON BLANC", etc.
+    let wineTypeCode = normalizeWineTypeToCode(wineType || product || sku);
     
-    // Extract wine type code from wineType field
-    let wineTypeCode = '';
-    const wineTypeUpper = wineType.toUpperCase();
-    
-    // Try to find wine type in wineType field (case-insensitive search)
-    for (const [fullName, code] of Object.entries(wineNameMap)) {
-      const fullNameUpper = fullName.toUpperCase();
-      // Check if wineType contains the wine type name
-      if (wineTypeUpper.includes(fullNameUpper)) {
-        wineTypeCode = code;
-        break;
-      }
-    }
-    
-    // If not found, try to extract from variety code in skuParts
-    if (!wineTypeCode && skuParts.varietyCode) {
-      const varietyCodeUpper = skuParts.varietyCode.toUpperCase();
-      // Direct code match
-      if (['SAB', 'PIN', 'CHR', 'ROS', 'PIG', 'GRU', 'LHS', 'RIESLING'].includes(varietyCodeUpper)) {
-        wineTypeCode = varietyCodeUpper;
-      }
+    // If not found from wineType field, try to extract from variety code in skuParts
+    if (!wineTypeCode || wineTypeCode.length > 10) {
+      wineTypeCode = normalizeWineTypeToCode(skuParts.varietyCode || skuParts.fullSKU);
     }
     
     // Extract wine code from SKU or product
     const wineCode = skuParts.fullSKU || 
-                    (sku ? sku.toUpperCase().replace(/\s+/g, '_') : '') ||
-                    (product ? product.split(' ').slice(0, 3).join('_').toUpperCase().replace(/\s+/g, '_') : '');
+                    (sku ? sku.toUpperCase() : '') ||
+                    (product ? product.split(' ').slice(0, 3).join('_').toUpperCase() : '');
     
     // Build AdditionalAttribute3 with ONLY wine type code (no prefix)
     // Format: Just the wine type code (SAB, PIN, ROS, PIG, etc.)
     let additionalAttribute3 = '';
-    if (wineTypeCode) {
-      // Use only the wine type code without any prefix
+    if (wineTypeCode && wineTypeCode.length <= 10) { // Only use if it's a valid wine code (not full text)
       additionalAttribute3 = wineTypeCode;
     } else {
-      // Fallback: use existing wine code if no wine type code found
-      additionalAttribute3 = wineCode || `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase().replace(/\s+/g, '_');
+      // Fallback: try to extract wine type from wineCode or product
+      const fallbackWineType = normalizeWineTypeToCode(wineCode || product || sku);
+      if (fallbackWineType && fallbackWineType.length <= 10) {
+        additionalAttribute3 = fallbackWineType;
+      } else {
+        // Last fallback: use existing wine code if no wine type code found
+        additionalAttribute3 = wineCode || `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase();
+      }
+    }
+    
+    // Build location string - for USA, include state if available
+    let location = distributorName;
+    if (state && (upperSheetName === 'USA' || sheetName.includes('USA'))) {
+      location = `${state}`;
     }
     
     normalized.push({
-      // Distributor information - use sheet name as distributor
-      Location: distributorName,
+      // Distributor information - use sheet name as distributor, include state for USA
+      Location: location,
       Distributor: distributorName,
       
       // Product information
@@ -1755,7 +1894,7 @@ export function normalizeDistributorStockOnHandData(records, sheetName = '') {
       
       // Additional fields for Dashboard compatibility
       AdditionalAttribute2: normalizeCountryCode(country || sheetName), // Normalized country code
-      AdditionalAttribute3: additionalAttribute3 || `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase().replace(/\s+/g, '_'),
+      AdditionalAttribute3: additionalAttribute3 || `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase(),
       
       _sheetName: sheetName,
       _originalData: row
