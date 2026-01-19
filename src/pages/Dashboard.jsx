@@ -313,7 +313,7 @@ export default function Dashboard() {
                 'rose': ['rose', 'rosé'],
                 'gru': ['gruner veltliner', 'gruner', 'gru'],
                 'lhs': ['late harvest sauvignon', 'lhs'],
-                'riesling': ['riesling']
+                'ries': ['riesling']
               };
               
               let matchesWine = false;
@@ -520,7 +520,7 @@ export default function Dashboard() {
                 'rose': ['rose', 'rosé'], // Include accented version
                 'gru': ['gruner veltliner', 'gruner', 'gru'],
                 'lhs': ['late harvest sauvignon', 'lhs'],
-                'riesling': ['riesling']
+                'ries': ['riesling']
               };
               
               let matchesWine = false;
@@ -807,7 +807,7 @@ export default function Dashboard() {
                 'rose': ['rose', 'rosé'], // Include accented version
                 'gru': ['gruner veltliner', 'gruner', 'gru'],
                 'lhs': ['late harvest sauvignon', 'lhs'],
-                'riesling': ['riesling']
+                'ries': ['riesling']
               };
               
               let matchesWine = false;
@@ -1490,7 +1490,7 @@ export default function Dashboard() {
               'rose': ['rose', 'rosé'], // Include accented version
               'gru': ['gruner veltliner', 'gruner', 'gru'],
               'lhs': ['late harvest sauvignon', 'lhs'],
-              'riesling': ['riesling']
+              'ries': ['riesling']
             };
             
             let matchesWine = !wineTypeFilter && !wineTypeCode;
@@ -2292,7 +2292,7 @@ export default function Dashboard() {
                 'rose': ['rose', 'rosé'],
                 'gru': ['gruner veltliner', 'gruner', 'gru'],
                 'lhs': ['late harvest sauvignon', 'lhs'],
-                'riesling': ['riesling']
+                'ries': ['riesling']
               };
               
               if (!matchesWine && codeToNameMap[code]) {

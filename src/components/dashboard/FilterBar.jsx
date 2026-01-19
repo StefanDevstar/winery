@@ -235,7 +235,7 @@ export default function FilterBar({ filters, onFilterChange }) {
           'PIG': 'Pinot Gris',
           'GRU': 'Gruner Veltliner',
           'LHS': 'Late Harvest Sauvignon',
-          'RIESLING': 'Riesling'
+          'RIES': 'Riesling'
         };
         
         // Try to extract wine type code (e.g., SAB, PIN, CHR, etc.)
@@ -244,13 +244,13 @@ export default function FilterBar({ filters, onFilterChange }) {
           const parts = wineCode.split('_');
           const varietyCode = parts.find(p => {
             const upper = p.toUpperCase();
-            return ['SAB', 'PIN', 'CHR', 'ROS', 'PIG', 'GRU', 'LHS', 'RIESLING', 'CHARDONNAY'].includes(upper);
+            return ['SAB', 'PIN', 'CHR', 'ROS', 'PIG', 'GRU', 'LHS', 'RIES'].includes(upper);
           });
           
           if (varietyCode) {
             const code = varietyCode.toUpperCase();
             // Normalize codes - map CHARDONNAY to CHR to avoid duplicates
-            const normalizedCode = code === 'CHARDONNAY' ? 'CHR' : code;
+            const normalizedCode = code;
             const wineName = wineNameMap[normalizedCode] || code;
             
             // Only add if we don't already have this wine name, or if this code is shorter
@@ -294,7 +294,7 @@ export default function FilterBar({ filters, onFilterChange }) {
           } else if (lowerName.includes('late harvest sauvignon') || lowerName.includes('late harvest')) {
             checkAndAddWineType('LHS', 'Late Harvest Sauvignon');
           } else if (lowerName.includes('riesling')) {
-            checkAndAddWineType('RIESLING', 'Riesling');
+            checkAndAddWineType('RIES', 'Riesling');
           }
         }
         
@@ -315,7 +315,7 @@ export default function FilterBar({ filters, onFilterChange }) {
           } else if (lowerVariety.includes('late harvest sauvignon') || lowerVariety.includes('late harvest')) {
             checkAndAddWineType('LHS', 'Late Harvest Sauvignon');
           } else if (lowerVariety.includes('riesling')) {
-            checkAndAddWineType('RIESLING', 'Riesling');
+            checkAndAddWineType('RIES', 'Riesling');
           }
         }
       });
