@@ -1,39 +1,40 @@
 
 import React, { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import { BarChart3, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export default function Layout({ children, currentPageName }) {
   const [daysSinceUpdate, setDaysSinceUpdate] = useState("");
+  const location = useLocation();
+
+  const updateDaysSinceUpdate = () => {
+    const timestampStr = localStorage.getItem('vc_last_upload_timestamp');
+    if (!timestampStr) {
+      setDaysSinceUpdate("No data uploaded yet");
+      return;
+    }
+
+    try {
+      const uploadDate = new Date(timestampStr);
+      const now = new Date();
+      const diffTime = Math.abs(now.getTime() - uploadDate.getTime());
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays === 0) {
+        setDaysSinceUpdate("Today");
+      } else if (diffDays === 1) {
+        setDaysSinceUpdate("Yesterday");
+      } else {
+        setDaysSinceUpdate(`${diffDays} days ago`);
+      }
+    } catch (e) {
+      setDaysSinceUpdate("Invalid date");
+    }
+  };
 
   useEffect(() => {
-    const updateDaysSinceUpdate = () => {
-      const timestampStr = localStorage.getItem('vc_last_upload_timestamp');
-      if (!timestampStr) {
-        setDaysSinceUpdate("No data uploaded yet");
-        return;
-      }
-
-      try {
-        const uploadDate = new Date(timestampStr);
-        const now = new Date();
-        const diffTime = Math.abs(now.getTime() - uploadDate.getTime());
-        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-        
-        if (diffDays === 0) {
-          setDaysSinceUpdate("Today");
-        } else if (diffDays === 1) {
-          setDaysSinceUpdate("Yesterday");
-        } else {
-          setDaysSinceUpdate(`${diffDays} days ago`);
-        }
-      } catch (e) {
-        setDaysSinceUpdate("Invalid date");
-      }
-    };
-
     // Update immediately
     updateDaysSinceUpdate();
 
@@ -52,6 +53,11 @@ export default function Layout({ children, currentPageName }) {
       clearInterval(interval);
     };
   }, []);
+
+  // Update when route changes (e.g., navigating from UploadData to Dashboard)
+  useEffect(() => {
+    updateDaysSinceUpdate();
+  }, [location.pathname]);
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-white">
       <style>{`

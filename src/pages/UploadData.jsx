@@ -288,6 +288,10 @@ export default function UploadDataPage() {
       }
       // Note: For Excel files, combined data is already saved above in the type-specific handlers
 
+      // Save upload timestamp to localStorage FIRST
+      const uploadTimestamp = new Date().toISOString();
+      localStorage.setItem('vc_last_upload_timestamp', uploadTimestamp);
+
       // Notify other parts of app that new data is available
       try {
         window.dispatchEvent(new CustomEvent('vc:data:uploaded', { 
@@ -301,10 +305,6 @@ export default function UploadDataPage() {
       } catch (e) {
         // ignore if CustomEvent not supported
       }
-
-      // Save upload timestamp to localStorage
-      const uploadTimestamp = new Date().toISOString();
-      localStorage.setItem('vc_last_upload_timestamp', uploadTimestamp);
 
       const successMessage = (type === 'distributor_stock' || type === 'exports' || type === 'stock_on_hand' || type === 'sales') && isExcel
         ? `${totalRecords} records from ${sheetCount} sheet(s) imported successfully.`
