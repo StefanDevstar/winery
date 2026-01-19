@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import DataUploadCard from '../components/upload/DataUploadCard';
 import { TrendingUp, Package, FileText, Users, ChevronLeft, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -39,6 +39,70 @@ export default function UploadDataPage() {
   });
   const [globalError, setGlobalError] = useState(null);
   const [globalSuccess, setGlobalSuccess] = useState(null);
+  const [lastUpdatedTimes, setLastUpdatedTimes] = useState({});
+
+  // Helper function to format last updated time
+  const getLastUpdatedText = (type) => {
+    // First check state, then localStorage
+    if (lastUpdatedTimes[type]) {
+      return lastUpdatedTimes[type];
+    }
+    
+    const timestampStr = localStorage.getItem(`vc_last_upload_timestamp_${type}`);
+    if (!timestampStr) {
+      return null;
+    }
+
+    try {
+      const uploadDate = new Date(timestampStr);
+      const now = new Date();
+      const diffTime = Math.abs(now.getTime() - uploadDate.getTime());
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      
+      let text = "";
+      if (diffDays === 0) {
+        text = "Today";
+      } else if (diffDays === 1) {
+        text = "Yesterday";
+      } else {
+        text = `${diffDays} days ago`;
+      }
+      
+      // Update state
+      setLastUpdatedTimes(prev => ({ ...prev, [type]: text }));
+      return text;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  // Load last updated times on mount
+  useEffect(() => {
+    const types = ['sales', 'exports', 'warehouse_stock', 'stock_on_hand_distributors'];
+    const times = {};
+    types.forEach(type => {
+      const timestampStr = localStorage.getItem(`vc_last_upload_timestamp_${type}`);
+      if (timestampStr) {
+        try {
+          const uploadDate = new Date(timestampStr);
+          const now = new Date();
+          const diffTime = Math.abs(now.getTime() - uploadDate.getTime());
+          const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+          
+          if (diffDays === 0) {
+            times[type] = "Today";
+          } else if (diffDays === 1) {
+            times[type] = "Yesterday";
+          } else {
+            times[type] = `${diffDays} days ago`;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+    });
+    setLastUpdatedTimes(times);
+  }, []);
 
   const updateStatus = (key, status, message, progress = 0) => {
     setStatuses(prev => ({
@@ -288,9 +352,12 @@ export default function UploadDataPage() {
       }
       // Note: For Excel files, combined data is already saved above in the type-specific handlers
 
-      // Save upload timestamp to localStorage FIRST
+      // Save upload timestamp to localStorage for this specific data type
       const uploadTimestamp = new Date().toISOString();
-      localStorage.setItem('vc_last_upload_timestamp', uploadTimestamp);
+      localStorage.setItem(`vc_last_upload_timestamp_${type}`, uploadTimestamp);
+      
+      // Update state immediately
+      setLastUpdatedTimes(prev => ({ ...prev, [type]: "Today" }));
 
       // Notify other parts of app that new data is available
       try {
@@ -448,6 +515,7 @@ export default function UploadDataPage() {
             onFileUpload={(file) => handleFileUpload(file, 'exports')}
             processingStatus={statuses.exports}
             acceptFileTypes=".xlsx,.xls,.csv"
+            lastUpdated={getLastUpdatedText('exports')}
           />
 
           <DataUploadCard
@@ -457,6 +525,7 @@ export default function UploadDataPage() {
             onFileUpload={(file) => handleFileUpload(file, 'warehouse_stock')}
             processingStatus={statuses.warehouse_stock}
             acceptFileTypes=".xlsx,.xls,.csv"
+            lastUpdated={getLastUpdatedText('warehouse_stock')}
           />
 
           <DataUploadCard
@@ -466,6 +535,7 @@ export default function UploadDataPage() {
             onFileUpload={(file) => handleFileUpload(file, 'sales')}
             processingStatus={statuses.sales}
             acceptFileTypes=".xlsx,.xls,.csv"
+            lastUpdated={getLastUpdatedText('sales')}
           />
           <DataUploadCard
             title="Distributors Stock on Hand"
@@ -474,6 +544,7 @@ export default function UploadDataPage() {
             onFileUpload={(file) => handleFileUpload(file, 'stock_on_hand_distributors')}
             processingStatus={statuses.stock_on_hand_distributors}
             acceptFileTypes=".xlsx,.xls,.csv"
+            lastUpdated={getLastUpdatedText('stock_on_hand_distributors')}
           />
         </div>
 

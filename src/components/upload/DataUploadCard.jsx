@@ -11,7 +11,8 @@ export default function DataUploadCard({
   Icon,
   onFileUpload,
   processingStatus,
-  acceptFileTypes = ".csv"
+  acceptFileTypes = ".csv",
+  lastUpdated = null
 }) {
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef(null);
@@ -95,13 +96,6 @@ export default function DataUploadCard({
             onDragLeave={handleDrag} 
             onDrop={handleDrop}
           >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={acceptFileTypes}
-              onChange={handleFileSelect}
-              className="hidden"
-            />
             <div className="text-center">
               <Upload className="w-8 h-8 sm:w-10 sm:h-10 mx-auto text-slate-400 mb-2 sm:mb-3" />
               <p className="text-xs sm:text-sm text-slate-600 mb-1 font-medium">
@@ -128,6 +122,14 @@ export default function DataUploadCard({
     <Card className={`glass-effect shadow-lg transition-all duration-300 ${
       processingStatus.status === 'success' ? 'border-green-300 border-2' : ''
     }`}>
+      {/* Always render file input so it's available for "Try again" button */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={acceptFileTypes}
+        onChange={handleFileSelect}
+        className="hidden"
+      />
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 sm:gap-3">
@@ -145,6 +147,9 @@ export default function DataUploadCard({
             <div className="min-w-0">
               <CardTitle className="text-sm sm:text-base font-semibold">{title}</CardTitle>
               <p className="text-xs text-slate-500 line-clamp-2">{description}</p>
+              {lastUpdated && (
+                <p className="text-xs text-slate-400 mt-1">Last updated: {lastUpdated}</p>
+              )}
             </div>
           </div>
         </div>
