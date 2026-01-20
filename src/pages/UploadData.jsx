@@ -111,6 +111,68 @@ export default function UploadDataPage() {
     }));
   };
 
+  const resetStatus = (key) => {
+    updateStatus(key, 'idle', '', 0);
+    setGlobalError(null);
+  };
+
+  // Clear all localStorage keys for a specific data type
+  const clearDataTypeFromStorage = (type) => {
+    try {
+      // Clear metadata first to get sheet names
+      const metadataKey = {
+        sales: 'vc_sales_metadata',
+        exports: 'vc_exports_metadata',
+        warehouse_stock: 'vc_warehouse_stock_metadata',
+        stock_on_hand_distributors: 'vc_distributor_stock_on_hand_metadata'
+      }[type];
+
+      if (metadataKey) {
+        const metadataRaw = localStorage.getItem(metadataKey);
+        if (metadataRaw) {
+          try {
+            const metadata = JSON.parse(metadataRaw);
+            // Clear individual sheet data
+            if (metadata.sheetNames && Array.isArray(metadata.sheetNames)) {
+              metadata.sheetNames.forEach(sheetName => {
+                const sheetKey = {
+                  sales: `vc_sales_data_${sheetName}`,
+                  exports: `vc_exports_data_${sheetName}`,
+                  warehouse_stock: `vc_warehouse_stock_data_${sheetName}`,
+                  stock_on_hand_distributors: `vc_distributor_stock_on_hand_data_${sheetName}`
+                }[type];
+                if (sheetKey) {
+                  localStorage.removeItem(sheetKey);
+                }
+              });
+            }
+          } catch (e) {
+            // Error parsing metadata, continue anyway
+          }
+        }
+        // Clear metadata
+        localStorage.removeItem(metadataKey);
+      }
+
+      // Clear combined data
+      const combinedKey = {
+        sales: 'vc_sales_data',
+        exports: 'vc_exports_data',
+        warehouse_stock: 'vc_warehouse_stock_data',
+        stock_on_hand_distributors: 'vc_distributor_stock_on_hand_data'
+      }[type];
+      if (combinedKey) {
+        localStorage.removeItem(combinedKey);
+      }
+
+      // Clear upload timestamp
+      const timestampKey = `vc_last_upload_timestamp_${type}`;
+      localStorage.removeItem(timestampKey);
+    } catch (e) {
+      // Error clearing storage, continue anyway
+    }
+  };
+
   const handleFileUpload = async (file, type) => {
     if (!file) return;
 
@@ -123,11 +185,13 @@ export default function UploadDataPage() {
     
     if (excelTypes.includes(type)) {
       if (!isExcel && !isCsv) {
+        clearDataTypeFromStorage(type);
         updateStatus(type, 'error', 'Invalid file type. Please upload an Excel (.xlsx) or CSV file.');
         return;
       }
     } else {
       if (!isCsv) {
+        clearDataTypeFromStorage(type);
         updateStatus(type, 'error', 'Invalid file type. Please upload a CSV.');
         return;
       }
@@ -373,6 +437,8 @@ export default function UploadDataPage() {
       setTimeout(() => updateStatus(type, 'idle', ''), 3000);
 
     } catch (error) {
+      // Clear localStorage for this data type on error
+      clearDataTypeFromStorage(type);
       updateStatus(type, 'error', error.message || 'An unknown error occurred.');
       setGlobalError(`Failed to process ${type} data. Please check the file format and try again.`);
     }
@@ -507,6 +573,7 @@ export default function UploadDataPage() {
             processingStatus={statuses.exports}
             acceptFileTypes=".xlsx,.xls,.csv"
             lastUpdated={getLastUpdatedText('exports')}
+            onReset={() => resetStatus('exports')}
           />
 
           <DataUploadCard
@@ -517,6 +584,7 @@ export default function UploadDataPage() {
             processingStatus={statuses.warehouse_stock}
             acceptFileTypes=".xlsx,.xls,.csv"
             lastUpdated={getLastUpdatedText('warehouse_stock')}
+            onReset={() => resetStatus('warehouse_stock')}
           />
 
           <DataUploadCard
@@ -527,6 +595,7 @@ export default function UploadDataPage() {
             processingStatus={statuses.sales}
             acceptFileTypes=".xlsx,.xls,.csv"
             lastUpdated={getLastUpdatedText('sales')}
+            onReset={() => resetStatus('sales')}
           />
           <DataUploadCard
             title="Distributors Stock on Hand"
@@ -536,6 +605,7 @@ export default function UploadDataPage() {
             processingStatus={statuses.stock_on_hand_distributors}
             acceptFileTypes=".xlsx,.xls,.csv"
             lastUpdated={getLastUpdatedText('stock_on_hand_distributors')}
+            onReset={() => resetStatus('stock_on_hand_distributors')}
           />
         </div>
 

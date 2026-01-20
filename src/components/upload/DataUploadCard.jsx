@@ -12,7 +12,8 @@ export default function DataUploadCard({
   onFileUpload,
   processingStatus,
   acceptFileTypes = ".csv",
-  lastUpdated = null
+  lastUpdated = null,
+  onReset = null
 }) {
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef(null);
@@ -39,6 +40,22 @@ export default function DataUploadCard({
   const handleFileSelect = (e) => {
     if (e.target.files && e.target.files[0]) {
       onFileUpload(e.target.files[0]);
+    }
+    // Reset input value so the same file can be selected again
+    if (e.target) {
+      e.target.value = '';
+    }
+  };
+
+  const handleTryAgain = () => {
+    // Reset error status if reset callback is provided
+    if (onReset) {
+      onReset();
+    }
+    // Reset file input value to allow selecting the same file again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
     }
   };
 
@@ -75,7 +92,7 @@ export default function DataUploadCard({
             <Button 
               variant="outline" 
               size="sm" 
-              onClick={() => fileInputRef.current?.click()}
+              onClick={handleTryAgain}
               className="mt-2"
             >
               Try Again
