@@ -2243,8 +2243,15 @@ export default function Dashboard() {
               return false;
             }
             
-            // NOTE: Do NOT filter by country - warehouse stock is the main stock that supplies all distributors
-            // The country filter should only affect distributor stock and sales data, not warehouse stock
+            // Filter by country (if selected)
+            if (countryFilter) {
+              const rawCountryCode = (item.Market || item.AdditionalAttribute2 || item.market || item.additionalAttribute2 || "");
+              const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
+              const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
+              if (countryCode !== normalizedFilter) {
+                return false;
+              }
+            }
             
             // Filter by wine type (if selected)
             if (wineTypeFilter && wineTypeFilter !== "all" && wineTypeCode) {
