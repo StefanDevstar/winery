@@ -44,7 +44,7 @@ export default function WarehouseStockProjectionChart({
     return data.map(period => {
       const periodData = {
         period: period.period,
-        predictedSales: period.predictedSales || 0, // Include predicted sales for tooltip display
+        predictedSales: period.predictedSales || 0, // Total predicted sales (for backward compatibility)
       };
 
       // Sum projected available stock by wine type
@@ -67,7 +67,15 @@ export default function WarehouseStockProjectionChart({
           0
         );
         
+        // Calculate predicted sales for this wine type (sum of predictedSales from all wines of this type)
+        const predictedSalesForType = winesOfType.reduce(
+          (sum, w) => sum + (w.predictedSales || 0),
+          0
+        );
+        
         periodData[wineKey] = Math.round(totalProjectedAvailable);
+        // Store predicted sales per wine type for tooltip display
+        periodData[`${wineKey}_predictedSales`] = Math.round(predictedSalesForType);
       });
 
       return periodData;
@@ -79,8 +87,9 @@ export default function WarehouseStockProjectionChart({
     if (active && payload && payload.length) {
       const total = payload.reduce((sum, entry) => sum + (entry.value || 0), 0);
       // Get predicted sales from the data (stored in period data)
+      // Use period.predictedSales directly - same as Stock Float Projection
       const periodData = payload[0]?.payload;
-      const predictedSales = periodData?.predictedSales || 0;
+      const totalPredictedSales = periodData?.predictedSales || 0;
       
       return (
         <div className="bg-white p-3 border rounded-lg shadow-md text-sm">
@@ -96,9 +105,11 @@ export default function WarehouseStockProjectionChart({
             <p className="border-t pt-1 mt-1">
               <span className="font-medium">Total Available:</span> {total.toLocaleString()} cases
             </p>
-            <p className="mt-1">
-              <span className="font-medium">Projected Sales:</span> {predictedSales?.toLocaleString() || 0} cases
-            </p>
+            {totalPredictedSales > 0 && (
+              <p className="mt-1">
+                <span className="font-medium">Total Projected Sales:</span> {totalPredictedSales.toLocaleString()} cases
+              </p>
+            )}
           </div>
         </div>
       );
@@ -216,7 +227,7 @@ export default function WarehouseStockProjectionChart({
             <strong>Formula:</strong> Projected Available = Current Available - Projected Sales (per month)
           </p>
           <p>
-            Shows the projection of stock we will have available at future dates, based on current warehouse available inventory (Available field) minus predicted sales over time. Stock is grouped by distributor (AdditionalAttribute2) and wine type.
+            Shows the projection of stock we will have available at future dates, based on current warehouse available inventory (Available field) minus predicted sales over time. Stock is grouped by distributor and wine type.
           </p>
         </div>
       </CardContent>

@@ -1932,9 +1932,6 @@ export default function Dashboard() {
         // Calculate months until stock hits 0 for each distributor/wine combination
         // Formula: Based on current stock + in-transit stock - projected sales per month
         const stockOutProjections = [];
-        const stockOutCurrentDate = new Date();
-        const stockOutCurrentYear = stockOutCurrentDate.getFullYear();
-        const stockOutCurrentMonth = stockOutCurrentDate.getMonth();
         
         // Group distributor projections by distributor and wine
         const distributorWineMap = new Map();
@@ -2402,8 +2399,26 @@ export default function Dashboard() {
           const warehouseStockByDistributorWine = new Map();
           filteredWarehouseStock.forEach(item => {
             // Get distributor name from AdditionalAttribute2
-            const distributorName = (item.AdditionalAttribute2 || item.additionalAttribute2 || item.Market || item.market || "").trim();
-            if (!distributorName) return;
+            // CRITICAL: Normalize distributor name to match Stock Float Projection format
+            // Warehouse stock uses country codes (usa, ire, nzl, au-b), but we need to map to distributor names (USA, IRE, NZL, AU-B)
+            let rawDistributorName = (item.AdditionalAttribute2 || item.additionalAttribute2 || item.Market || item.market || "").trim();
+            if (!rawDistributorName) return;
+            
+            // Normalize distributor name to match Stock Float Projection format (USA, IRE, NZL, AU-B)
+            // This ensures the lookup key matches winePredictedSalesMap keys
+            let distributorName = rawDistributorName.toUpperCase();
+            if (distributorName === 'USA' || distributorName === 'US' || distributorName.includes('USA')) {
+              distributorName = 'USA';
+            } else if (distributorName === 'IRE' || distributorName === 'IRELAND' || distributorName.includes('IRE')) {
+              distributorName = 'IRE';
+            } else if (distributorName === 'NZ' || distributorName === 'NZL' || distributorName === 'NEW ZEALAND' || distributorName.includes('NZ')) {
+              distributorName = 'NZL';
+            } else if (distributorName === 'AU-B' || distributorName === 'AUB' || distributorName.includes('AU-B')) {
+              distributorName = 'AU-B';
+            } else {
+              // Fallback: use normalized country code
+              distributorName = normalizeCountryCode(rawDistributorName).toUpperCase();
+            }
             
             // Get wine code - PRIORITY: Use AdditionalAttribute3 (wine type code) first, not Code (product code) or ProductName (brand)
             // AdditionalAttribute3 should contain the wine type code (SAB, PIN, CHR, etc.) from normalizeWarehouseStockData
@@ -2422,7 +2437,7 @@ export default function Dashboard() {
             // Skip if we still don't have a valid wine type code
             if (!wineCode) return;
             
-            // Create key: distributor_wineCode
+            // Create key: distributor_wineCode (use lowercase for key matching)
             const key = `${distributorName.toLowerCase()}_${wineCode}`;
             
             // Get wine type name for display (use Variety or map from code)
@@ -2487,129 +2502,73 @@ export default function Dashboard() {
           });
           
           
-          // CRITICAL: For warehouse stock projection, use TOTAL predicted sales ONLY for forward predictions
-          // For historical view: Just show current available stock without projections
-          let totalPredictedSalesForWarehouse = 0;
-          const warehouseWinePredictedSalesMap = new Map(); // key: `${distributor}_${wineCode}`, value: predictedSales
-          
-          if (filters.viewMode === "forward") {
-            // For forward predictions: Calculate total sales from all distributors over the past year
-            // This is the sum of all distributors' sales divided by months for last year
-            // IMPORTANT: Use warehouseSalesByPeriod (all wine types) not filteredSalesByPeriod (filtered by wine type)
-            const oneYearAgo = new Date();
-            oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-            
-            // Get all sales from the past year (already filtered by country if filter is set)
-            // Use warehouseSalesByPeriod which includes ALL wine types (not filtered by wine type)
-            const allHistoricalSales = Array.from(warehouseSalesByPeriod.entries())
-              .map(([key, value]) => {
-                const [year, month] = key.split('_');
-                const periodYear = parseInt(year);
-                const periodMonthIndex = monthNames.indexOf(month);
-                const periodDate = new Date(periodYear, periodMonthIndex, 1);
-                return { year, month, value, periodKey: key, periodDate };
-              })
-              .filter(({ periodDate }) => {
-                return periodDate >= oneYearAgo && periodDate <= new Date();
-              });
-            
-            if (allHistoricalSales.length > 0) {
-              // Sum = total sales across all distributors in the past year (all wine types)
-              const sum = allHistoricalSales.reduce((total, s) => total + s.value, 0);
-              // Count = number of months
-              const count = allHistoricalSales.length;
-              // Average = Sum / Count (total monthly sales across all distributors)
-              totalPredictedSalesForWarehouse = sum / count;
-            }
-            
-            // Pre-calculate wine-level predicted sales ONCE (before the month loop) for FORWARD predictions only
-            // Distribute total predicted sales proportionally based on available stock
-            const totalInitialStock = Array.from(warehouseStockByDistributorWine.values())
-              .reduce((sum, w) => sum + w.available, 0);
-            
-            warehouseStockByDistributorWine.forEach((wineStock, key) => {
-              let winePredictedSales = 0;
-              
-              if (totalInitialStock > 0 && totalPredictedSalesForWarehouse > 0) {
-                // Distribute total predicted sales proportionally based on available stock
-                winePredictedSales = totalPredictedSalesForWarehouse * (wineStock.available / totalInitialStock);
-              }
-              
-              warehouseWinePredictedSalesMap.set(key, winePredictedSales);
-            });
-          } else {
-            // For historical view: Don't use predicted sales - just show current available stock
-            // Set all predicted sales to 0 for historical periods
-            warehouseStockByDistributorWine.forEach((wineStock, key) => {
-              warehouseWinePredictedSalesMap.set(key, 0);
-            });
-          }
-          
+          // CRITICAL: For warehouse stock projection, use the EXACT SAME predicted sales as Stock Float Projection
+          // Use winePredictedSalesMap directly - don't create a separate map!
           // Calculate projection for each month
           // IMPORTANT: Use "Available" field as the stock value (not OnHand)
           // Formula: Projected Available = Current Available - Projected Sales (per month)
           // This shows what stock we will have available at future dates
-          // CRITICAL: Use the SAME predictedSales value for ALL months (pre-calculated above)
-          const cumulativeAvailableByDistributorWine = new Map();
+          // CRITICAL: Use the SAME TOTAL predictedSales value as Stock Float Projection
+          // Track cumulative TOTAL projected available for future months (subtract TOTAL predictedSales once per month)
+          // Month 1: Total Projected Available = Total Initial Available - TOTAL predictedSales
+          // Month 2+: Total Projected Available = Previous Total Projected Available - TOTAL predictedSales
+          // This matches Stock Float Projection logic exactly (uses aggregate predictedSales, not wine-specific)
+          let previousTotalProjectedAvailable = undefined;
           
-          // Initialize with current available stock (from Available field)
-          warehouseStockByDistributorWine.forEach((wineStock, key) => {
-            cumulativeAvailableByDistributorWine.set(key, wineStock.available);
-          });
+          // Calculate initial total available stock
+          const initialTotalAvailable = Array.from(warehouseStockByDistributorWine.values())
+            .reduce((sum, wineStock) => sum + wineStock.available, 0);
           
           monthsToDisplay.forEach(({ month, year }, monthIndex) => {
-            // Calculate total predicted sales for this period (aggregate across all wines)
-            let totalPredictedSalesForPeriod = 0;
-            if (filters.viewMode === "forward") {
-              totalPredictedSalesForPeriod = totalPredictedSalesForWarehouse;
-            }
+            // Use the EXACT SAME predictedSales logic as Stock Float Projection
+            // Historical: use actual sales from that period
+            // Forward: use predictedSales (constant value) - THIS IS THE TOTAL, NOT WINE-SPECIFIC
+            const periodKey = `${year}_${month}`;
+            const isHistorical = filters.viewMode === "historical";
+            const actualSalesForPeriod = isHistorical ? (filteredSalesByPeriod.get(periodKey) || 0) : 0;
+            const totalPredictedSalesForPeriod = isHistorical ? actualSalesForPeriod : predictedSales;
             
             const warehouseProjection = {
               period: `${month} ${year.slice(-2)}`,
-              predictedSales: totalPredictedSalesForPeriod, // Total predicted sales for this period (for display in tooltip)
+              predictedSales: totalPredictedSalesForPeriod, // EXACT SAME TOTAL predictedSales as Stock Float Projection
               wines: []
             };
             
-            warehouseStockByDistributorWine.forEach((wineStock, key) => {
-              // Get predicted sales for this wine (pre-calculated, same for all months)
-              // For historical view: This will be 0 (no projections)
-              // For forward view: This will be the distributed predicted sales
-              const winePredictedSales = warehouseWinePredictedSalesMap.get(key) || 0;
-              
-              let currentCumulativeAvailable = 0;
-              let projectedAvailable = 0;
-              let monthsStockOnHand = 0;
-              
-              if (filters.viewMode === "forward") {
-                // For forward predictions: Calculate cumulative available stock by subtracting predicted sales
-                // Get current cumulative available stock for this distributor/wine (from previous month's result)
-                currentCumulativeAvailable = cumulativeAvailableByDistributorWine.get(key);
-                
-                // If not set (shouldn't happen, but safety check), use initial available stock
-                if (currentCumulativeAvailable === undefined) {
-                  currentCumulativeAvailable = wineStock.available;
-                }
-                
-                // Calculate projected available stock for this period
-                // Projected Available = Current Cumulative Available - Predicted Sales for this month
-                // This shows the stock AFTER subtracting this month's predicted sales
-                projectedAvailable = Math.max(0, currentCumulativeAvailable - winePredictedSales);
-                
-                // Update cumulative available for next month (use projectedAvailable as the new starting point)
-                cumulativeAvailableByDistributorWine.set(key, projectedAvailable);
-                
-                // Calculate "Months Stock on Hand" - how many months of stock coverage based on sales velocity
-                // Formula: Months Stock on Hand = Current Available Stock / (Predicted Sales per month)
-                // This shows how many months of stock we have based on predicted sales
-                monthsStockOnHand = winePredictedSales > 0 
-                  ? currentCumulativeAvailable / winePredictedSales 
-                  : (currentCumulativeAvailable > 0 ? Infinity : 0);
+            // Calculate total projected available for this month (aggregate level, like Stock Float)
+            let totalProjectedAvailable = 0;
+            if (filters.viewMode === "forward") {
+              // EXACT SAME logic as Stock Float Projection aggregate
+              // Formula: Total Projected Available = Previous Total Projected Available - TOTAL predictedSales
+              // Month 1: Total Projected Available = Total Initial Available - TOTAL predictedSales
+              // Month 2+: Total Projected Available = Previous Total Projected Available - TOTAL predictedSales
+              if (previousTotalProjectedAvailable !== undefined) {
+                // Month 2+: Get previous month's total projected available, subtract TOTAL predicted sales
+                totalProjectedAvailable = Math.max(0, previousTotalProjectedAvailable - totalPredictedSalesForPeriod);
               } else {
-                // For historical view: Just show current available stock (no projections)
-                currentCumulativeAvailable = wineStock.available;
-                projectedAvailable = wineStock.available; // No change, just showing current stock
-                monthsStockOnHand = Infinity; // No sales prediction, so infinite months
+                // Month 1: Start with initial total available stock, subtract TOTAL predicted sales
+                totalProjectedAvailable = Math.max(0, initialTotalAvailable - totalPredictedSalesForPeriod);
               }
+              // Store for next month
+              previousTotalProjectedAvailable = totalProjectedAvailable;
+            } else {
+              // For historical view: Just show current total available stock (no projections)
+              totalProjectedAvailable = initialTotalAvailable;
+            }
+            
+            // Distribute total projected available proportionally to each wine based on initial proportions
+            // This maintains the relative distribution while applying the total subtraction
+            warehouseStockByDistributorWine.forEach((wineStock, key) => {
+              // Calculate proportion of this wine's initial stock relative to total initial stock
+              const wineProportion = initialTotalAvailable > 0 
+                ? wineStock.available / initialTotalAvailable 
+                : (1 / warehouseStockByDistributorWine.size); // Equal distribution if no initial stock
+              
+              // Distribute the total projected available proportionally
+              const projectedAvailable = totalProjectedAvailable * wineProportion;
+              
+              // Get wine-specific predicted sales for display purposes (but we use TOTAL for calculation)
+              const itemKey = `${wineStock.distributor.toLowerCase()}_${wineStock.wineCode}`;
+              const winePredictedSales = winePredictedSalesMap.get(itemKey) || 0;
               
               warehouseProjection.wines.push({
                 distributor: wineStock.distributor, // Distributor name from AdditionalAttribute2
@@ -2621,10 +2580,12 @@ export default function Dashboard() {
                 allocated: wineStock.allocated,
                 pending: wineStock.pending,
                 available: wineStock.available, // Initial available stock (from Available field)
-                currentAvailable: monthIndex === 0 ? wineStock.available : currentCumulativeAvailable,
-                predictedSales: winePredictedSales,
-                projectedAvailable: projectedAvailable, // What we will have available at this future date
-                monthsStockOnHand: monthsStockOnHand // Months of stock coverage based on sales velocity
+                currentAvailable: wineStock.available, // Initial available for reference
+                predictedSales: winePredictedSales, // Wine-specific predicted sales (for display)
+                projectedAvailable: projectedAvailable, // Proportionally distributed projected available (after subtracting TOTAL predictedSales)
+                monthsStockOnHand: totalPredictedSalesForPeriod > 0 
+                  ? totalProjectedAvailable / totalPredictedSalesForPeriod 
+                  : (totalProjectedAvailable > 0 ? Infinity : 0)
               });
             });
             
@@ -2697,13 +2658,8 @@ export default function Dashboard() {
       setFilters((prev) => {
         // If country is changing, reset appropriate filters
         if (type === 'country') {
-          if (value === 'usa') {
-            // When switching to USA, reset distributor and state
-            return { ...prev, [type]: value, distributor: 'all', state: 'all' };
-          } else {
             // When switching away from USA, reset state filter
             return { ...prev, [type]: value, distributor: 'all', state: 'all' };
-          }
         }
         return { ...prev, [type]: value };
       });
