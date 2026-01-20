@@ -1223,6 +1223,70 @@ export default function Dashboard() {
         const salesByMarket = new Map(); // key: market, value: array of {year, month, value}
         const filteredSalesByPeriod = new Map(); // key: `${year}_${normalizedMonth}` (overall)
         
+        // For warehouse predictions, we need ALL sales data (not filtered by wine type)
+        // Create a separate aggregation for warehouse predictions
+        const warehouseSalesByPeriod = new Map(); // key: `${year}_${normalizedMonth}` (for warehouse predictions - all wine types)
+        
+        // Create unfiltered sales data for warehouse predictions (only filter by country/state, not wine type)
+        const warehouseSalesData = [];
+        for (let i = 0; i < salesData.length; i++) {
+          const r = salesData[i];
+          
+          // Filter by country only (not wine type for warehouse predictions)
+          if (countryFilter) {
+            const rawCountryCode = (r.AdditionalAttribute2 || "");
+            const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
+            const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
+            if (countryCode !== normalizedFilter) continue;
+          }
+          
+          // Filter by state for USA
+          if (countryFilter === 'usa' && stateFilter) {
+            const location = (r.Location || "").trim();
+            if (location !== stateFilter) {
+              continue;
+            }
+          }
+          
+          // Filter by distributor for non-USA (but not wine type)
+          if (countryFilter !== 'usa' && distributorFilter) {
+            let location = (r.Location || "").toLowerCase().replace(/_/g, " ");
+            let locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s*-\s*/i, "").trim();
+            if (!locationWithoutPrefix || locationWithoutPrefix === location) {
+              locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s+/i, "").trim();
+            }
+            if (!locationWithoutPrefix || locationWithoutPrefix === location) {
+              locationWithoutPrefix = location;
+            }
+            const normalizedFilter = distributorFilter.toLowerCase();
+            if (!locationWithoutPrefix.includes(normalizedFilter) &&
+                !normalizedFilter.includes(locationWithoutPrefix)) {
+              continue;
+            }
+          }
+          
+          warehouseSalesData.push(r);
+        }
+        
+        // Aggregate warehouse sales data (all wine types) by period
+        for (let i = 0; i < warehouseSalesData.length; i++) {
+          const r = warehouseSalesData[i];
+          const rawMonth = r._month || "";
+          const year = r._year || "";
+          const salesValue = parseFloat(r.Available) || 0;
+          const market = (r.AdditionalAttribute2 || "").toLowerCase().trim();
+          
+          if (countryFilter && market !== countryFilter) {
+            continue;
+          }
+          
+          const normalizedMonth = normalizeMonth(rawMonth);
+          if (normalizedMonth && year && salesValue > 0 && market) {
+            const periodKey = `${year}_${normalizedMonth}`;
+            warehouseSalesByPeriod.set(periodKey, (warehouseSalesByPeriod.get(periodKey) || 0) + salesValue);
+          }
+        }
+        
           // Aggregate sales from filtered stock data (depletion summary) by market and period
         let salesDataCount = 0;
         let missingFieldsCount = 0;
@@ -2431,11 +2495,13 @@ export default function Dashboard() {
           if (filters.viewMode === "forward") {
             // For forward predictions: Calculate total sales from all distributors over the past year
             // This is the sum of all distributors' sales divided by months for last year
+            // IMPORTANT: Use warehouseSalesByPeriod (all wine types) not filteredSalesByPeriod (filtered by wine type)
             const oneYearAgo = new Date();
             oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
             
             // Get all sales from the past year (already filtered by country if filter is set)
-            const allHistoricalSales = Array.from(filteredSalesByPeriod.entries())
+            // Use warehouseSalesByPeriod which includes ALL wine types (not filtered by wine type)
+            const allHistoricalSales = Array.from(warehouseSalesByPeriod.entries())
               .map(([key, value]) => {
                 const [year, month] = key.split('_');
                 const periodYear = parseInt(year);
@@ -2448,7 +2514,7 @@ export default function Dashboard() {
               });
             
             if (allHistoricalSales.length > 0) {
-              // Sum = total sales across all distributors in the past year
+              // Sum = total sales across all distributors in the past year (all wine types)
               const sum = allHistoricalSales.reduce((total, s) => total + s.value, 0);
               // Count = number of months
               const count = allHistoricalSales.length;
@@ -2516,24 +2582,21 @@ export default function Dashboard() {
               
               if (filters.viewMode === "forward") {
                 // For forward predictions: Calculate cumulative available stock by subtracting predicted sales
-                // Get current cumulative available stock for this distributor/wine
-                currentCumulativeAvailable = cumulativeAvailableByDistributorWine.get(key) || 0;
+                // Get current cumulative available stock for this distributor/wine (from previous month's result)
+                currentCumulativeAvailable = cumulativeAvailableByDistributorWine.get(key);
                 
-                // For first month, use initial available stock
-                // For subsequent months, subtract predicted sales from previous month
-                if (monthIndex === 0) {
+                // If not set (shouldn't happen, but safety check), use initial available stock
+                if (currentCumulativeAvailable === undefined) {
                   currentCumulativeAvailable = wineStock.available;
-                } else {
-                  // Subtract predicted sales from previous month
-                  currentCumulativeAvailable = Math.max(0, currentCumulativeAvailable - winePredictedSales);
                 }
-                
-                // Update cumulative available for next month
-                cumulativeAvailableByDistributorWine.set(key, currentCumulativeAvailable);
                 
                 // Calculate projected available stock for this period
                 // Projected Available = Current Cumulative Available - Predicted Sales for this month
+                // This shows the stock AFTER subtracting this month's predicted sales
                 projectedAvailable = Math.max(0, currentCumulativeAvailable - winePredictedSales);
+                
+                // Update cumulative available for next month (use projectedAvailable as the new starting point)
+                cumulativeAvailableByDistributorWine.set(key, projectedAvailable);
                 
                 // Calculate "Months Stock on Hand" - how many months of stock coverage based on sales velocity
                 // Formula: Months Stock on Hand = Current Available Stock / (Predicted Sales per month)

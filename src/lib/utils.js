@@ -936,7 +936,7 @@ function parseUSASheet(records) {
   let headerRowIndex = -1;
   let monthColumns = [];
   
-  for (let i = 0; i < Math.min(3, records.length); i++) {
+  for (let i = 0; i < Math.min(4, records.length); i++) {
     const row = records[i];
     if (!row || typeof row !== 'object') continue;
     
@@ -954,7 +954,6 @@ function parseUSASheet(records) {
       break;
     }
   }
-  
   if (monthColumns.length === 0) {
     // Fallback: try to find months in column names
     if (records.length > 0) {
@@ -976,21 +975,14 @@ function parseUSASheet(records) {
   records.forEach((r, rowIndex) => {
     // Skip header rows
     if (rowIndex <= (headerRowIndex >= 0 ? headerRowIndex + 1 : 1)) return;
-    
-    const country = String(r.Country || '').trim();
-    if (country !== 'USA') return;
-    
-    // Get state from second column (index 1 in array, but we need to find the right key)
     // The structure is: Country, State, Wine Name, monthly values
     const values = Object.values(r);
     const state = values[1] ? String(values[1]).trim() : '';
-    const wineName = values[2] ? String(values[2]).trim() : '';
-    
+    const wineName = values[3] ? String(values[3]).trim() : '';
     // Skip totals and invalid rows
     if (!state || state === 'Total' || state === 'STATE' || !wineName || wineName === 'Total' || wineName === 'Wines') {
       return;
     }
-    
     // Process each month column
     monthColumns.forEach(({ key, month, year }) => {
       const value = parseFloat(String(r[key] || '0').replace(/,/g, '')) || 0;

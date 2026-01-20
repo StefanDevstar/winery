@@ -56,8 +56,14 @@ export default function WarehouseStockProjectionChart({
         ) || [];
         
         // Use projectedAvailable (what we will have available) - this is from Available field
+        // IMPORTANT: Always use projectedAvailable if it exists (even if 0), as it represents the stock after subtracting predicted sales
         const totalProjectedAvailable = winesOfType.reduce(
-          (sum, w) => sum + (w.projectedAvailable || w.currentAvailable || w.available || 0),
+          (sum, w) => {
+            // For forward predictions, use projectedAvailable (stock after subtracting predicted sales)
+            // For historical view, use available (current stock)
+            const value = w.projectedAvailable !== undefined ? w.projectedAvailable : (w.currentAvailable !== undefined ? w.currentAvailable : (w.available || 0));
+            return sum + value;
+          },
           0
         );
         
@@ -90,11 +96,9 @@ export default function WarehouseStockProjectionChart({
             <p className="border-t pt-1 mt-1">
               <span className="font-medium">Total Available:</span> {total.toLocaleString()} cases
             </p>
-            {predictedSales > 0 && (
-              <p className="mt-1">
-                <span className="font-medium">Projected Sales:</span> {predictedSales?.toLocaleString()} cases
-              </p>
-            )}
+            <p className="mt-1">
+              <span className="font-medium">Projected Sales:</span> {predictedSales?.toLocaleString() || 0} cases
+            </p>
           </div>
         </div>
       );
