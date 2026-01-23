@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { normalizeCountryCode, normalizeWineTypeToCode } from "../lib/utils";
+
 import KPITile from "../components/dashboard/KPITile";
 import FilterBar from "../components/dashboard/FilterBar";
 import StockFloatChart from "../components/dashboard/StockFloatChart";
@@ -201,7 +202,7 @@ export default function Dashboard() {
               const salesMeta = JSON.parse(salesMetadataRaw);
               if (salesMeta.sheetNames && Array.isArray(salesMeta.sheetNames)) {
                 // Only load specific distributor sheets: IRE, NZL, AU-C
-                const allowedSheets = ['IRE', 'NZL', 'AU-C', 'USA'];
+                const allowedSheets = ['IRE', 'NZL', 'USA', 'AU-B'];
                 salesMeta.sheetNames.forEach(sheetName => {
                   // Check if this sheet is in the allowed list (case-insensitive)
                   const normalizedSheetName = sheetName.toUpperCase();
@@ -403,6 +404,7 @@ export default function Dashboard() {
             
             filteredDistributorStockOnHand.push(r);
           }
+          
           // ───────── Filter Sales Data (Depletion Summary) ─────────
           // Filter sales/depletion data for sales predictions
           const filteredStock = [];
@@ -411,12 +413,18 @@ export default function Dashboard() {
             
             // Early exit for country filter (most selective)
             if (countryFilter) {
-              const rawCountryCode = (r.AdditionalAttribute2 || "");
+              const rawCountryCode = (r.AdditionalAttribute2 || r.Market || r.Country || "").toString().trim();
               const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
               const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
+            
+              if (rawCountryCode && (countryFilter === "AU-B" || rawCountryCode.toUpperCase().includes("AU"))) {
+                console.log("FILTER CHECK:", { rawCountryCode, countryCode, countryFilter, normalizedFilter });
+              }
+            
               if (countryCode !== normalizedFilter) continue;
-              
             }
+            
+            
             
             // Early exit for year filter
             if (yearFilter) {
@@ -620,8 +628,18 @@ export default function Dashboard() {
             
             filteredStock.push(r);
           }
-          
+          console.log(
+            "POST-FILTER sales markets:",
+            [...new Set(filteredStock.map(x =>
+              normalizeCountryCode(x.AdditionalAttribute2 || x.Market || x.Country).toLowerCase()
+            ))]
+          );
+          console.log("POST-FILTER sales rows:", filteredStock.length);
+          console.log("Unique sales raw AdditionalAttribute2:", [...new Set(salesData.map(r => (r.AdditionalAttribute2||"").toString().trim()))]);
+          console.log("Unique exports raw AdditionalAttribute2:", [...new Set(exportsData.map(e => (e.AdditionalAttribute2||"").toString().trim()))]);
 
+          
+          
           // ───────── Filter Exports ─────────
           // Only include "waiting to ship" and "in transit" orders (exclude "complete")
           // Optimized filtering with early returns
@@ -1422,6 +1440,10 @@ export default function Dashboard() {
             });
           }
         }
+
+        console.log("sales markets:", [...salesByMarket.keys()]);
+        console.log("exports markets:", [...inTransitByMarketDistributorWine.values()].map(x => x.market));
+
 
         // ───────── Stock Float Projection ─────────
         // stockFloatByDistributorWine is already built from filteredStock and filteredExports
@@ -2291,6 +2313,13 @@ export default function Dashboard() {
           }
         }
         
+        console.log(
+          "WAREHOUSE unique market-ish fields:",
+          [...new Set(warehouseStockData.map(x => (x.Market || x.AdditionalAttribute2 || x._sheetName || "").toString().trim()))]
+        );
+        
+        console.log("WAREHOUSE sheets actually loaded:", [...new Set(warehouseStockData.map(r => r._sheetName))]);
+
         
         if (warehouseStockData && Array.isArray(warehouseStockData) && warehouseStockData.length > 0) {
           // Filter warehouse stock by country and wine type
