@@ -10,6 +10,30 @@ import DistributorMap from "../components/dashboard/DistributorMap";
 import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 
+// ---- Brand helpers (drop-in) ----
+const normalizeBrandCode = (c) => {
+  const up = String(c || "").toUpperCase().trim();
+  return up === "BH" ? "TBH" : up; // treat BH as TBH
+};
+
+const extractBrandCode = (row) => {
+  // Best source: AdditionalAttribute3 like "JTW_SAB_2023"
+  const aa3 = String(row.AdditionalAttribute3 || row.Stock || "").toUpperCase().trim();
+  if (aa3) {
+    const tokens = aa3.split("_").map(t => t.trim()).filter(Boolean);
+    const hit = tokens.find(t => ["JTW", "TBH", "BH", "OTQ"].includes(t));
+    if (hit) return normalizeBrandCode(hit);
+  }
+
+  // Fallback: product/stock text
+  const name = String(row.ProductName || row.Stock || "").toLowerCase();
+  if (name.includes("jules taylor")) return "JTW";
+  if (name.includes("better half")) return "TBH";
+  if (name.includes("on the quiet")) return "OTQ";
+
+  return "";
+};
+
 /**
  * Parses dates from various Excel formats (M/D/Y, D/M/Y, Y-M-D, etc.)
  * @param {string} dateStr - Date string to parse
@@ -77,6 +101,7 @@ export default function Dashboard() {
     distributor: "all",
     state: "all", // State filter for USA
     wineType: "all",
+    brand: "all",
     year: "all",
     viewMode: "historical",
     forwardLookingMonths: 3,
@@ -202,7 +227,7 @@ export default function Dashboard() {
               const salesMeta = JSON.parse(salesMetadataRaw);
               if (salesMeta.sheetNames && Array.isArray(salesMeta.sheetNames)) {
                 // Only load specific distributor sheets: IRE, NZL, AU-C
-                const allowedSheets = ['IRE', 'NZL', 'USA', 'AU-B'];
+                const allowedSheets = ['IRE', 'NZL', 'USA', 'AU-B', 'AU-C'];
                 salesMeta.sheetNames.forEach(sheetName => {
                   // Check if this sheet is in the allowed list (case-insensitive)
                   const normalizedSheetName = sheetName.toUpperCase();
@@ -258,6 +283,8 @@ export default function Dashboard() {
           const wineTypeFilter = filters.wineType === "all" ? null : filters.wineType.replace(/_/g, " ").toLowerCase();
           const wineTypeCode = filters.wineType === "all" ? null : filters.wineType.split("_")[0];
           const yearFilter = filters.year === "all" ? null : filters.year.toString();
+          const brandFilter = filters.brand && filters.brand !== "all" ? filters.brand.toLowerCase() : null;
+
           
           
           // ───────── Filter Distributor Stock On Hand ─────────
@@ -419,6 +446,7 @@ export default function Dashboard() {
             
               if (rawCountryCode && (countryFilter === "AU-B" || rawCountryCode.toUpperCase().includes("AU"))) {
                 console.log("FILTER CHECK:", { rawCountryCode, countryCode, countryFilter, normalizedFilter });
+                
               }
             
               if (countryCode !== normalizedFilter) continue;
@@ -637,6 +665,7 @@ export default function Dashboard() {
           console.log("POST-FILTER sales rows:", filteredStock.length);
           console.log("Unique sales raw AdditionalAttribute2:", [...new Set(salesData.map(r => (r.AdditionalAttribute2||"").toString().trim()))]);
           console.log("Unique exports raw AdditionalAttribute2:", [...new Set(exportsData.map(e => (e.AdditionalAttribute2||"").toString().trim()))]);
+          console.log("brandFilter =", brandFilter);
 
           
           
@@ -905,6 +934,13 @@ export default function Dashboard() {
               
               if (!matchesWine) continue;
             }
+
+            // ---- BRAND FILTER (drop-in) ----
+            if (brandFilter) {
+              const brandCode = extractBrandCode(r);
+              if (!brandCode || brandCode.toLowerCase() !== brandFilter) continue;
+            }
+
             
             filteredExports.push(r);
           }

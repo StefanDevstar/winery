@@ -206,32 +206,43 @@ export function parseExcel(arrayBuffer) {
   if (!arrayBuffer) return {};
 
   try {
+    // Read the workbook from the array buffer
     const workbook = XLSX.read(arrayBuffer, { type: 'array', cellDates: false });
+    
     const sheetsData = {};
-
+    
+    // Iterate through all sheets
     workbook.SheetNames.forEach((sheetName) => {
       const worksheet = workbook.Sheets[sheetName];
-
-      // ✅ once per sheet
-      const marketFromSheet = normalizeCountryCode(sheetName).toLowerCase();
-
+      
+      // Convert sheet to JSON with header row
       const sheetData = XLSX.utils.sheet_to_json(worksheet, {
-        header: 1,
-        defval: '',
-        raw: false,
+        header: 1, // Use array of arrays format first
+        defval: '', // Default value for empty cells
+        raw: false, // Convert values to strings
       });
-
+      
       if (sheetData.length === 0) {
         sheetsData[sheetName] = [];
-        return;
+        return; // Skip empty sheets but include them
       }
-
+      
+      // Special handling for IRE sheet - header row is at index 5 (row 6 in Excel, 0-indexed as 5)
       let headerRowIndex = -1;
-
       if (sheetName.toUpperCase() === 'IRE') {
-        if (sheetData.length > 5) headerRowIndex = 5;
+        // For IRE sheet, headers are in row 5 (0-indexed)
+        // Row 0: "SUPPLIER REPORT" header
+        // Row 1-2: Empty
+        // Row 3: Supplier info
+        // Row 4: Dates
+        // Row 5: Actual headers ("Rank", "SKU", "Product", "Jan-25", etc.)
+        // Row 6+: Data rows
+        if (sheetData.length > 5) {
+          headerRowIndex = 5;
+        }
       }
-
+      
+      // For other sheets, find the header row (first non-empty row)
       if (headerRowIndex === -1) {
         for (let i = 0; i < sheetData.length; i++) {
           const row = sheetData[i];
@@ -241,50 +252,49 @@ export function parseExcel(arrayBuffer) {
           }
         }
       }
-
+      
       if (headerRowIndex === -1) {
         sheetsData[sheetName] = [];
-        return;
+        return; // No header found
       }
-
+      
+      // Get headers and clean them
       const headers = sheetData[headerRowIndex].map((h, idx) => {
         const header = String(h || '').replace(/^\uFEFF/, '').trim();
         return header || `Column_${idx}`;
       });
-
+      
       const records = [];
-
+      
+      // Process data rows
       for (let i = headerRowIndex + 1; i < sheetData.length; i++) {
         const row = sheetData[i];
-
+        
+        // Skip completely empty rows
         if (!row || row.length === 0 || !row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== '')) {
           continue;
         }
-
+        
+        // Create object from row
         const record = {};
         headers.forEach((header, index) => {
           const value = row[index];
+          // Convert value to string and trim, handle null/undefined
           record[header] = value !== null && value !== undefined ? String(value).trim() : '';
         });
-
-        // ✅ Stamp sheet + market
-        record._sheetName = sheetName;
-
-        const raw = (record.AdditionalAttribute2 || record.Market || record.Country || "").toString().trim();
-        record.AdditionalAttribute2 = raw ? normalizeCountryCode(raw).toLowerCase() : marketFromSheet;
-
+        
         records.push(record);
       }
-
+      
+      // Filter out empty records before storing
       sheetsData[sheetName] = filterEmptyRecords(records);
     });
-
+    
     return sheetsData;
   } catch (error) {
     throw new Error(`Failed to parse Excel file: ${error.message}`);
   }
 }
-
 
 // Company to country mapping for exports data
 const COMPANY_TO_COUNTRY_MAP = {
