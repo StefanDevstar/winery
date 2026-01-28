@@ -11,6 +11,41 @@ import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
 
+// If Ireland is selected, divide all numeric values in the rows by 12
+function divideBy12IfIreland(rows, countryFilter) {
+  const cf = (countryFilter || "").toLowerCase();
+  if (cf !== "ire" && cf !== "ireland") return rows;
+
+  // don't touch non-quantity fields that would break if divided
+  const skip = new Set([
+    "_year", "Year", "Vintage",
+    "_month", "Month", "month",     // ✅ ADD THESE
+    "CaseSize", "BottleVolume",
+    "months", "term_years"
+  ]);
+
+  return (rows || []).map((r) => {
+    const out = { ...r };
+    for (const k of Object.keys(out)) {
+      if (skip.has(k)) continue;
+
+      const v = out[k];
+
+      // number
+      if (typeof v === "number" && Number.isFinite(v)) {
+        out[k] = v / 12;
+        continue;
+      }
+
+      // numeric string (e.g., "1,234")
+      if (typeof v === "string") {
+        const n = Number(v.replace(/,/g, "").trim());
+        if (Number.isFinite(n) && v.trim() !== "") out[k] = n / 12;
+      }
+    }
+    return out;
+  });
+}
 
 // ---- Brand helpers (drop-in) ----
 const normalizeBrandCode = (c) => {
@@ -287,7 +322,14 @@ export default function Dashboard() {
           const yearFilter = filters.year === "all" ? null : filters.year.toString();
           const brandFilter = filters.brand && filters.brand !== "all" ? filters.brand.toLowerCase() : null;
 
-          
+          distributorStockOnHand = divideBy12IfIreland(distributorStockOnHand, countryFilter);
+          salesData = divideBy12IfIreland(salesData, countryFilter);
+
+          if ((countryFilter || "").toLowerCase() === "ire") {
+            console.log("[IRE] salesData sample BEFORE FILTERING:", salesData[0]);
+            console.log("[IRE] salesData keys:", salesData[0] ? Object.keys(salesData[0]) : "no rows");
+          }
+
           
           // ───────── Filter Distributor Stock On Hand ─────────
           // Filter distributor stock on hand data (actual stock at distributors)
@@ -327,6 +369,7 @@ export default function Dashboard() {
                 continue;
               }
             }
+            
             
             if (wineTypeFilter || wineTypeCode) {
               // Check both AdditionalAttribute3 and VarietyCode fields
@@ -1326,11 +1369,9 @@ export default function Dashboard() {
           const rawMonth = r._month || "";
           const year = r._year || "";
           const salesValue = parseFloat(r.Available) || 0;
-          const market = (r.AdditionalAttribute2 || "").toLowerCase().trim();
+          const market = normalizeCountryCode(r.AdditionalAttribute2 || r.Market || r.Country || "").toLowerCase();
+          if (countryFilter && market !== normalizeCountryCode(countryFilter).toLowerCase()) continue;
           
-          if (countryFilter && market !== countryFilter) {
-            continue;
-          }
           
           const normalizedMonth = normalizeMonth(rawMonth);
           if (normalizedMonth && year && salesValue > 0 && market) {
@@ -2155,9 +2196,11 @@ export default function Dashboard() {
               accuracy: null, // Can't calculate accuracy without actuals
             });
           }
+          setForecastAccuracyData(accuracyData);
+
         }
         
-        setForecastAccuracyData(accuracyData);
+
         
           // ───────── Shipping Time Analysis ─────────
           // Calculate average shipping times by distributor and freight forwarder
@@ -2553,7 +2596,6 @@ export default function Dashboard() {
             const wineStock = warehouseStockByDistributorWine.get(key);
             // Available-only, 12pk-equivalent
             wineStock.available += getWarehouseAvailable12pk(item);  
-            console.log("Available:", wineStock.available, "from item:", item);
  
           });
           console.log(
