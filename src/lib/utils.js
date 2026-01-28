@@ -7,6 +7,149 @@ export function cn(...inputs) {
   return twMerge(clsx(inputs))
 }
 
+// utils.js
+
+const PK_RE = /\b(6|12)\s*(pk|pck)\b/i;
+
+/**
+ * Return the string that contains "... 6pk" or "... 12pk".
+ * We DO NOT parse from other formats like "750ml/6p" etc.
+ *
+ * Priority:
+ * 1) explicit client description fields (if your normalizer sets them)
+ * 2) ProductName (because your keys include it and it often holds the "12pk" text)
+ * 3) _originalData (because you store the raw row there)
+ * 4) last-resort scan of _originalData string values for something containing 6pk/12pk
+ */
+export function getWarehouseClientDescription(row) {
+  if (!row) return "";
+
+  // 1) explicit fields (if present)
+  const directCandidates = [
+    row.clientDescription,
+    row.ClientDescription,
+    row["Client Description"],
+    row["ClientDescription"],
+  ];
+
+  for (const v of directCandidates) {
+    const s = (v ?? "").toString().trim();
+    if (PK_RE.test(s)) return s;
+  }
+
+  // 2) Commonly, your parsed sheet stores that "JT 22 PIG US 12pk" in ProductName
+  const productNameCandidates = [
+    row.ProductName,
+    row["ProductName"],
+    row["Product Name"],
+  ];
+
+  for (const v of productNameCandidates) {
+    const s = (v ?? "").toString().trim();
+    if (PK_RE.test(s)) return s;
+  }
+
+  // 3) check _originalData in case the value wasn't lifted to top-level
+  const od = row._originalData;
+  if (od && typeof od === "object") {
+    const odCandidates = [
+      od.clientDescription,
+      od.ClientDescription,
+      od["Client Description"],
+      od["ClientDescription"],
+      od.ProductName,
+      od["ProductName"],
+      od["Product Name"],
+    ];
+
+    for (const v of odCandidates) {
+      const s = (v ?? "").toString().trim();
+      if (PK_RE.test(s)) return s;
+    }
+
+    // 4) last resort: find ANY string cell in original row that contains 6pk/12pk
+    for (const [, v] of Object.entries(od)) {
+      if (typeof v !== "string") continue;
+      const s = v.trim();
+      if (PK_RE.test(s)) return s;
+    }
+  }
+
+  return "";
+}
+
+export function extractPackSizeFromClientDescription(clientDescRaw) {
+  const s = (clientDescRaw || "").toString().trim().toLowerCase();
+  const m = s.match(/\b(6|12)\s*(pk|pck)\b/);
+  if (!m) return 12;
+  return Number(m[1]) === 6 ? 6 : 12;
+}
+
+export function packMultiplierFromClientDescription(clientDescRaw) {
+  return extractPackSizeFromClientDescription(clientDescRaw) === 6 ? 0.5 : 1;
+}
+
+export function getWarehouseAvailable12pk(row) {
+  const availableRaw = Number(row?.Available ?? row?.available ?? 0) || 0;
+  const clientDesc = getWarehouseClientDescription(row); // now should find "...12pk/6pk"
+  const mult = packMultiplierFromClientDescription(clientDesc);
+  return availableRaw * mult;
+}
+
+
+
+// ---------- Brand parsing (shared) ----------
+export const BRAND_NAME_MAP = {
+  JT: "Jules Taylor",
+  TBH: "The Better Half",
+  OTQ: "On the Quiet",
+};
+
+export function normalizeBrandToCode(text) {
+  const s = String(text || "").toUpperCase();
+
+  let best = { code: "", idx: -1 };
+  const scan = (code, patterns) => {
+    for (const p of patterns) {
+      const idx = s.lastIndexOf(p);
+      if (idx > best.idx) best = { code, idx };
+    }
+  };
+
+  scan("JT", ["JULES TAYLOR", "JTW", "JT"]);
+  scan("TBH", ["THE BETTER HALF", "BETTER HALF", "TBH", "BH"]);
+  scan("OTQ", ["ON THE QUIET", "OTQ"]);
+
+  return best.code;
+}
+
+export function getBrandCodeFromRow(r) {
+  const direct =
+    r.BrandCode ||
+    r.Brand ||
+    r["Brand"] ||
+    "";
+
+  let code = normalizeBrandToCode(direct);
+  if (code) return code;
+
+  const fallback =
+    r["Wine Name"] ||
+    r["Wines"] ||
+    r["Product Description (SKU)"] ||
+    r.Stock ||
+    r.SKU ||
+    r.Code ||
+    r.ProductName ||
+    r.Product ||
+    r.Description ||
+    r.AdditionalAttribute3 ||
+    "";
+
+  return normalizeBrandToCode(fallback);
+}
+
+
 // Simple, robust CSV parser returning array of objects.
 // Handles quoted fields, commas inside quotes, and trims headers.
 export function parseCSV(text, { delimiter = ',', skipEmptyLines = true } = {}) {
@@ -438,7 +581,7 @@ export function normalizeWineTypeToCode(wineTypeText) {
     return 'LHS';
   }
   if (normalized.includes('RIESLING')) {
-    return 'RIESLING';
+    return 'RIES';
   }
   
   // Return original if no match found
@@ -558,229 +701,165 @@ export function normalizeCountryCode(countryCode) {
  * @param {string} sku - Product Description (SKU) string
  * @returns {Object} - Parsed components: { brand, vintage, variety, market, caseSize, bottleVolume, fullSKU }
  */
-export function parseProductSKU(sku) {
-  if (!sku || typeof sku !== 'string') {
+export function parseProductSKU(sku, opts = {}) {
+  if (!sku || typeof sku !== "string") {
     return {
-      brand: '',
-      vintage: '',
-      variety: '',
-      market: '',
-      caseSize: '',
-      bottleVolume: '',
-      fullSKU: ''
+      brand: "",
+      brandCode: "",
+      vintage: "",
+      vintageCode: "",
+      variety: "",
+      varietyCode: "",
+      market: "",
+      marketCode: "",
+      caseSize: "",
+      caseSizeCode: "",
+      bottleVolume: "",
+      bottleVolumeCode: "",
+      packBottles: null,
+      fullSKU: ""
     };
   }
-  
-  const cleaned = sku.trim();
-  const parts = cleaned.split(/\s+/).filter(p => p && p.trim() !== '');
-  
-  // Remove values like #2 or strip
-  const filteredParts = parts.filter(p => !p.match(/^#\d+$/i) && !p.toLowerCase().includes('strip'));
-  
-  // Brand mapping
-  const brandMap = {
-    'JT': 'Jules Taylor',
-    'TBH': 'The Better Half',
-    'BH': 'The Better Half',
-    'OTQ': 'On the Quiet'
-  };
-  
-  // Variety mapping
-  const varietyMap = {
-    'SAB': 'Sauvignon Blanc',
-    'CHR': 'Chardonnay',
-    'ROSE': 'Rose',
-    'PIN': 'Pinot Noir',
-    'PIG': 'Pinot Gris',
-    'GRU': 'Gruner Veltliner',
-    'LHS': 'Late Harvest Sauvignon',
-    'RIES': 'RIESLING'
 
+  const cleaned = sku.trim();
+  const U = cleaned.toUpperCase().trim();
+
+  // Mappings
+  const brandMap = {
+    JT: "Jules Taylor",
+    TBH: "The Better Half",
+    BH: "The Better Half",
+    OTQ: "On the Quiet"
   };
-  
-  // Find variety by searching filteredParts for variety codes or full wine type names
-  const varietyCodes = Object.keys(varietyMap);
-  const wineTypeMap = {
-    'SAUVIGNON BLANC': 'SAB',
-    'PINOT NOIR': 'PIN',
-    'CHARDONNAY': 'CHR',
-    'ROSE': 'ROS',
-    'PINOT GRIS': 'PIG',
-    'GRUNER VELTLINER': 'GRU',
-    'LATE HARVEST SAUVIGNON': 'LHS',
-    'RIESLING': 'RIES'
+
+  const varietyMap = {
+    SAB: "Sauvignon Blanc",
+    CHR: "Chardonnay",
+    ROS: "Rose",
+    PIN: "Pinot Noir",
+    PIG: "Pinot Gris",
+    GRU: "Gruner Veltliner",
+    LHS: "Late Harvest Sauvignon",
+    RIES: "Riesling"
   };
-  const wineTypeNames = Object.keys(wineTypeMap);
-  
-  let foundVariety = '';
-  let foundVarietyIndex = -1;
-  
-  // First, check for exact matches with variety codes (SAB, PIN, etc.)
-  for (let i = 0; i < filteredParts.length; i++) {
-    const part = filteredParts[i].toUpperCase();
-    // Check if this part matches any variety code
-    if (varietyCodes.includes(part)) {
-      foundVariety = filteredParts[i];
-      foundVarietyIndex = i;
-      break;
-    }
+
+  const MARKET_TOKENS = new Set([
+    "US","USA","NZ","NZL","ROW","KO","GR","UK","C/S","PHI","UEA","SG","TAI","POL","HK","MAL","CA","NE","TH","DE",
+    "JPN","JP","IRE","IE","AU/B","AU/C","AU-B","AU-C"
+  ]);
+
+  const caseSizeMap = { "6PCK":"6 pack", "12PCK":"12 pack", "SINGLE":"Single" };
+  const bottleVolumeMap = { "1500":"Magnum", "375":"Demi", "750":"Regular", "750ML":"Regular" };
+
+  // Tokenize (split spaces AND slash/comma so "750ML/12P" becomes two tokens)
+  const rawTokens = U.split(/\s+/).filter(Boolean);
+  const tokens = rawTokens
+    .flatMap(t => t.split(/[\/,]/g))
+    .map(t => t.trim())
+    .filter(Boolean);
+
+  // BRAND
+  const brandAliases = { JT: "JT", JTW: "JT", TBH: "TBH", BH: "TBH", OTQ: "OTQ" };
+  let brandCode = "";
+  for (const t of tokens) {
+    if (brandAliases[t]) { brandCode = brandAliases[t]; break; }
   }
-  
-  // If not found, check for full wine type names in single parts (SAUVIGNON BLANC, PINOT NOIR, etc.)
-  if (!foundVariety) {
-    for (let i = 0; i < filteredParts.length; i++) {
-      const part = filteredParts[i].toUpperCase();
-      // Check if this part matches any full wine type name
-      for (const wineTypeName of wineTypeNames) {
-        if (part === wineTypeName || part.includes(wineTypeName) || wineTypeName.includes(part)) {
-          // Convert full name to code
-          foundVariety = wineTypeMap[wineTypeName];
-          foundVarietyIndex = i;
-          break;
-        }
-      }
-      if (foundVariety) break;
-    }
+  const brandDisplay = brandMap[brandCode] || brandCode;
+
+  // VINTAGE (prefer 2-digit tokens; allow 4-digit)
+  let vintageCode = "";
+  for (const t of tokens) {
+    if (/^\d{2}$/.test(t)) { vintageCode = t; break; }
+    if (/^\d{4}$/.test(t)) { vintageCode = t.slice(2); break; }
   }
-  
-  // Also check for full wine type names split across multiple parts (e.g., "SAUVIGNON BLANC" might be split)
-  if (!foundVariety && filteredParts.length > 1) {
-    // Check two consecutive parts
-    for (let i = 0; i < filteredParts.length - 1; i++) {
-      const combined = `${filteredParts[i]} ${filteredParts[i + 1]}`.toUpperCase();
-      for (const wineTypeName of wineTypeNames) {
-        if (combined === wineTypeName || combined.includes(wineTypeName) || wineTypeName.includes(combined)) {
-          foundVariety = wineTypeMap[wineTypeName];
-          foundVarietyIndex = i;
-          break;
-        }
-      }
-      if (foundVariety) break;
-    }
-    
-    // Check three consecutive parts (for "LATE HARVEST SAUVIGNON")
-    if (!foundVariety && filteredParts.length > 2) {
-      for (let i = 0; i < filteredParts.length - 2; i++) {
-        const combined = `${filteredParts[i]} ${filteredParts[i + 1]} ${filteredParts[i + 2]}`.toUpperCase();
-        for (const wineTypeName of wineTypeNames) {
-          if (combined === wineTypeName || combined.includes(wineTypeName) || wineTypeName.includes(combined)) {
-            foundVariety = wineTypeMap[wineTypeName];
-            foundVarietyIndex = i;
-            break;
-          }
-        }
-        if (foundVariety) break;
-      }
-    }
+  let fullVintage = "";
+  if (vintageCode) {
+    const yy = parseInt(vintageCode, 10);
+    fullVintage = yy >= 50 ? `19${vintageCode}` : `20${vintageCode}`;
   }
-  
-  // If still not found, try to find by checking if part contains variety code
-  if (!foundVariety) {
-    for (let i = 0; i < filteredParts.length; i++) {
-      const part = filteredParts[i].toUpperCase();
-      for (const code of varietyCodes) {
-        if (part.includes(code) || code.includes(part)) {
-          foundVariety = filteredParts[i];
-          foundVarietyIndex = i;
-          break;
-        }
-      }
-      if (foundVariety) break;
-    }
+
+  // VARIETY CODE
+  const VARIETY_CODES = Object.keys(varietyMap); // <-- single source of truth
+  let varietyCode = "";
+  for (const t of tokens) {
+    if (VARIETY_CODES.includes(t)) { varietyCode = t; break; }
+    if (t === "ROSE") { varietyCode = "ROS"; break; }
   }
-  
-  if (filteredParts.length < 4) {
-    // Not enough parts, return what we have (using found variety if available)
-    return {
-      brand: filteredParts[0] || '',
-      vintage: filteredParts[1] || '',
-      variety: foundVariety || '',
-      market: filteredParts[3] || '',
-      caseSize: filteredParts[4] || '',
-      bottleVolume: filteredParts[5] || '',
-      fullSKU: cleaned
-    };
+
+  // fallback from text
+  if (!varietyCode) {
+    const packedNoSpace = U.replace(/\s+/g, "");
+    if (packedNoSpace.includes("SAUVIGNON")) varietyCode = "SAB";
+    else if (packedNoSpace.includes("CHARD")) varietyCode = "CHR";
+    else if (packedNoSpace.includes("GRUNER") || packedNoSpace.includes("VELTLINER")) varietyCode = "GRU";
+    else if (packedNoSpace.includes("LATEHARVEST")) varietyCode = "LHS";
+    else if (packedNoSpace.includes("RIESLING")) varietyCode = "RIES";
+    else if (packedNoSpace.includes("PINOTGRIS") || packedNoSpace.includes("GRIGIO")) varietyCode = "PIG";
+    else if (packedNoSpace.includes("PINOT")) varietyCode = "PIN";
+    else if (packedNoSpace.includes("ROSE") || packedNoSpace.includes("ROSÉ")) varietyCode = "ROS";
   }
-  
-  // Case size mapping
-  const caseSizeMap = {
-    '6PCK': '6 pack',
-    '12PCK': '12 pack',
-    'SINGLE': 'Single'
-  };
-  
-  // Bottle volume mapping
-  const bottleVolumeMap = {
-    '1500': 'Magnum',
-    '375': 'Demi',
-    '750': 'Regular',
-    '750ML': 'Regular'
-  };
-  
-  // Use the variety we found earlier (or fallback to filteredParts[2])
-  const variety = foundVariety || '';
-  const varietyIndex = foundVarietyIndex >= 0 ? foundVarietyIndex : 2;
-  
-  // Assign other parts based on variety position
-  // Brand is typically first (index 0)
-  const brand = filteredParts[0] || '';
-  
-  // Vintage is typically second (index 1), but could be different if variety is at index 1
-  let vintage = '';
-  if (varietyIndex === 1) {
-    // If variety is at index 1, vintage might be at index 0 or 2
-    vintage = filteredParts[0] && /^\d{2}$/.test(filteredParts[0]) ? filteredParts[0] : (filteredParts[2] || '');
-  } else {
-    vintage = filteredParts[1] || '';
+
+  // MARKET (pick LAST market token)
+  let marketCode = "";
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const t = tokens[i];
+    if (MARKET_TOKENS.has(t)) { marketCode = t; break; }
   }
-  
-  // Market is typically after variety
-  let market = '';
-  if (varietyIndex >= 0 && varietyIndex < filteredParts.length - 1) {
-    market = filteredParts[varietyIndex + 1] || '';
-  } else {
-    market = filteredParts[3] || '';
+
+  // PACK SIZE (supports 12pk, 12pck, 750ml/12p, 6x750ml, etc.)
+  const packed = U.replace(/\s+/g, ""); // keep "/" for /12P formats
+  let packBottles = null;
+
+  // 12PK / 12PCK / 12PACK / 12P (incl /12P)
+  let m = packed.match(/(?:\/)?(\d{1,2})(?:PCK|PK|PACK|P)\b/);
+  if (m) packBottles = Number(m[1]);
+
+  // 6X750ML / 12X750ML etc
+  if (!packBottles) {
+    m = packed.match(/(\d{1,2})X\d{3,4}ML\b/);
+    if (m) packBottles = Number(m[1]);
   }
-  
-  // Case size and bottle volume are typically at the end
-  const caseSize = filteredParts[filteredParts.length - 2] || filteredParts[4] || '';
-  const bottleVolume = filteredParts[filteredParts.length - 1] || filteredParts[5] || '';
-  
-  // Handle market codes that appear twice (use second one)
-  let finalMarket = market;
-  if (filteredParts.length > 4) {
-    // Check if there's a second market code
-    const potentialSecondMarket = filteredParts.slice(4).find(p => 
-      ['KO', 'ROW', 'GR', 'UK', 'C/S', 'PHI', 'UEA', 'SG', 'TAI', 'POL', 'HK', 'MAL', 'CA', 'NE', 'TH', 'DE', 'US', 'JPN', 'AU/B', 'AU/C', 'IRE', 'NZ', 'NZL'].includes(p.toUpperCase())
-    );
-    if (potentialSecondMarket) {
-      finalMarket = potentialSecondMarket;
-    }
-  }
-  
-  // Convert vintage to full year
-  let fullVintage = vintage;
-  if (vintage && /^\d{2}$/.test(vintage)) {
-    const year = parseInt(vintage);
-    fullVintage = year >= 50 ? `19${vintage}` : `20${vintage}`;
-  }
-  
+
+  // SINGLE keyword
+  if (!packBottles && packed.includes("SINGLE")) packBottles = 1;
+
+  // ✅ default to 12 if Units=Cases and no pack found
+  const units = String(opts.units || "").trim().toLowerCase();
+  if (!packBottles && units === "cases") packBottles = 12;
+
+  // CASE SIZE CODE
+  let caseSizeCode = "";
+  if (packBottles === 6) caseSizeCode = "6PCK";
+  else if (packBottles === 12) caseSizeCode = "12PCK";
+  else if (packBottles === 1) caseSizeCode = "SINGLE";
+
+  // BOTTLE VOLUME
+  let bottleVolumeCode = "";
+  const volMatch = packed.match(/(\d{3,4})ML\b/);
+  if (volMatch) bottleVolumeCode = volMatch[1];
+  if (!bottleVolumeCode && packed.includes("MAGNUM")) bottleVolumeCode = "1500";
+  if (!bottleVolumeCode && packed.includes("DEMI")) bottleVolumeCode = "375";
+  if (!bottleVolumeCode) bottleVolumeCode = "750";
+
   return {
-    brand: brandMap[brand.toUpperCase()] || brand,
-    brandCode: brand,
+    brand: brandDisplay,
+    brandCode,
     vintage: fullVintage,
-    vintageCode: vintage,
-    variety: varietyMap[variety.toUpperCase()] || variety,
-    varietyCode: variety,
-    market: normalizeCountryCode(finalMarket),
-    marketCode: finalMarket,
-    caseSize: caseSizeMap[caseSize.toUpperCase()] || caseSize,
-    caseSizeCode: caseSize,
-    bottleVolume: bottleVolumeMap[bottleVolume.toUpperCase()] || (bottleVolume ? `${bottleVolume}ml` : 'Regular'),
-    bottleVolumeCode: bottleVolume || '750',
+    vintageCode,
+    variety: varietyMap[varietyCode] || varietyCode,
+    varietyCode,
+    market: normalizeCountryCode(marketCode),
+    marketCode,
+    caseSize: caseSizeMap[caseSizeCode] || caseSizeCode,
+    caseSizeCode,
+    bottleVolume: bottleVolumeMap[bottleVolumeCode] || `${bottleVolumeCode}ml`,
+    bottleVolumeCode,
+    packBottles,
     fullSKU: cleaned
   };
 }
+
+
 
 /**
  * Checks if a record/object is empty (all values are empty/null/undefined)
@@ -1376,9 +1455,20 @@ export function normalizeExportsData(records, sheetName = '') {
       const freightForwarder = freightForwarderCol ? String(row[freightForwarderCol] || '').trim() : '';
       
       if (!productDesc || cases <= 0) continue;
-      
-      // Parse Product Description (SKU) - same format as stock on hand
+
+      // Parse Product Description (SKU)
       const skuParts = parseProductSKU(productDesc);
+
+      // Always compute BrandCode safely
+      const brandCode = normalizeBrandToCode(
+        skuParts.brandCode || skuParts.brand || row.Brand || productDesc
+      );
+
+      const brandDisplay = BRAND_NAME_MAP[brandCode] || (skuParts.brand || row.Brand || "");
+
+            
+    
+
       
       // Helper function to parse dates from various Excel formats
       const parseDate = (dateStr) => {
@@ -1467,8 +1557,8 @@ export function normalizeExportsData(records, sheetName = '') {
         ProductName: skuParts.brand ? `${skuParts.brand} ${skuParts.variety}`.trim() : '',
         
         // SKU components
-        Brand: skuParts.brand,
-        BrandCode: skuParts.brandCode,
+        Brand: brandDisplay,
+        BrandCode: brandCode,
         Vintage: skuParts.vintage,
         Variety: skuParts.variety,
         VarietyCode: skuParts.varietyCode,

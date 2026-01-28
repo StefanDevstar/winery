@@ -9,6 +9,8 @@ import WarehouseStockProjectionChart from "../components/dashboard/WarehouseStoc
 import DistributorMap from "../components/dashboard/DistributorMap";
 import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
+import { getWarehouseAvailable12pk } from "@/lib/utils";
+
 
 // ---- Brand helpers (drop-in) ----
 const normalizeBrandCode = (c) => {
@@ -443,11 +445,7 @@ export default function Dashboard() {
               const rawCountryCode = (r.AdditionalAttribute2 || r.Market || r.Country || "").toString().trim();
               const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
               const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
-            
-              if (rawCountryCode && (countryFilter === "AU-B" || rawCountryCode.toUpperCase().includes("AU"))) {
-                console.log("FILTER CHECK:", { rawCountryCode, countryCode, countryFilter, normalizedFilter });
-                
-              }
+      
             
               if (countryCode !== normalizedFilter) continue;
             }
@@ -2313,8 +2311,11 @@ export default function Dashboard() {
         setAlerts(alerts);
         
         // ───────── Warehouse Stock Projection ─────────
-        // Calculate warehouse stock projection: Available = On Hand - (Allocated + Pending) - Projected Sales
-        // This shows what stock we will have available at future dates
+        // Warehouse stock projection:
+        // Start stock = Available (12pk-equivalent)
+        // If item is 6pk => Available * 0.5, if 12pk => Available * 1
+        // Then subtract projected sales (same unit)
+        
         const warehouseStockProjection = [];
         
         // Load warehouse stock data - aggregate from all sheets if needed
@@ -2355,6 +2356,26 @@ export default function Dashboard() {
         );
         
         console.log("WAREHOUSE sheets actually loaded:", [...new Set(warehouseStockData.map(r => r._sheetName))]);
+        const PK_RE = /\b(6|12)\s*(pk|pck)\b/i;
+
+      console.log(
+        "WAREHOUSE first pk-bearing cells:",
+        warehouseStockData.slice(0, 20).map(r => {
+          const od = r._originalData && typeof r._originalData === "object" ? r._originalData : {};
+          const hits = [];
+
+          // check top-level first
+          for (const [k, v] of Object.entries(r)) {
+            if (typeof v === "string" && PK_RE.test(v)) hits.push({ where: "row", k, v });
+          }
+          // then original
+          for (const [k, v] of Object.entries(od)) {
+            if (typeof v === "string" && PK_RE.test(v)) hits.push({ where: "_originalData", k, v });
+          }
+
+          return hits[0] || null;
+        }).filter(Boolean)
+      );
 
         
         if (warehouseStockData && Array.isArray(warehouseStockData) && warehouseStockData.length > 0) {
@@ -2363,8 +2384,7 @@ export default function Dashboard() {
           // and Market/AdditionalAttribute2 for country
           const filteredWarehouseStock = warehouseStockData.filter(item => {
             // Skip items without stock data
-            const hasStockData = (item.OnHand || item.onHand || 0) > 0 || 
-                                 (item.Available || item.available || 0) > 0;
+            const hasStockData = getWarehouseAvailable12pk(item) > 0;
             if (!hasStockData) {
               return false;
             }
@@ -2525,21 +2545,26 @@ export default function Dashboard() {
                 brand: item.Brand || item.brand || "",
                 variety: wineTypeName, // Wine type name for display
                 country: item.Market || item.AdditionalAttribute2 || item.market || item.additionalAttribute2 || "",
-                onHand: 0,
-                allocated: 0,
-                pending: 0,
-                available: 0 // This is the primary stock value we care about
+                // NOTE: we store ONLY the stock number we actually use
+                available: 0
               });
             }
             
             const wineStock = warehouseStockByDistributorWine.get(key);
-            // Handle both capitalized and lowercase field names
-            wineStock.onHand += parseFloat(item.OnHand || item.onHand || 0);
-            wineStock.allocated += parseFloat(item.Allocated || item.allocated || 0);
-            wineStock.pending += parseFloat(item.Pending || item.pending || 0);
-            // IMPORTANT: Use Available field as the stock value
-            wineStock.available += parseFloat(item.Available || item.available || 0);
+            // Available-only, 12pk-equivalent
+            wineStock.available += getWarehouseAvailable12pk(item);  
+            console.log("Available:", wineStock.available, "from item:", item);
+ 
           });
+          console.log(
+            "WAREHOUSE available (raw vs 12pk-eq) sample:",
+            filteredWarehouseStock.slice(0, 50).map(r => ({
+              clientDesc: (r["Client Description"] || r.clientDescription || "").toString(),
+              availableRaw: r.Available ?? r.available,
+              available12pk: getWarehouseAvailable12pk(r),
+            }))
+          );
+          
           
           // Convert to wine-only map for backward compatibility (grouping by wine across all distributors)
           // Group by wine type name (variety) for display, not wineCode
@@ -2553,17 +2578,13 @@ export default function Dashboard() {
                 brand: wineStock.brand,
                 variety: wineTypeName, // Use wine type name for display
                 country: wineStock.country,
-                onHand: 0,
-                allocated: 0,
-                pending: 0,
                 available: 0
               });
             }
             const aggregated = warehouseStockByWine.get(wineTypeName);
-            aggregated.onHand += wineStock.onHand;
-            aggregated.allocated += wineStock.allocated;
-            aggregated.pending += wineStock.pending;
             aggregated.available += wineStock.available;
+            // Backward compat if anything expects "onHand"
+            aggregated.onHand = aggregated.available;
           });
           
           
@@ -2641,11 +2662,11 @@ export default function Dashboard() {
                 brand: wineStock.brand,
                 variety: wineStock.variety,
                 country: wineStock.country,
-                onHand: wineStock.onHand, // Initial on-hand stock
-                allocated: wineStock.allocated,
-                pending: wineStock.pending,
+                
                 available: wineStock.available, // Initial available stock (from Available field)
                 currentAvailable: wineStock.available, // Initial available for reference
+                onHand: wineStock.available, // Backward compatibility
+
                 predictedSales: winePredictedSales, // Wine-specific predicted sales (for display)
                 projectedAvailable: projectedAvailable, // Proportionally distributed projected available (after subtracting TOTAL predictedSales)
                 monthsStockOnHand: totalPredictedSalesForPeriod > 0 
