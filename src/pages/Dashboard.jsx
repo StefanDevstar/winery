@@ -11,6 +11,104 @@ import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
 
+// ---- Brand filtering (same pattern as wineType) ----
+const normalizeBrandFilter = (b) => {
+  const up = String(b || "").toUpperCase().trim();
+  if (!up) return "";
+  if (up === "BH") return "TBH"; // treat BH as TBH
+  return up;
+};
+
+const brandCodeToNames = {
+  JTW: ["jules taylor", "jules", "jt", "jtw"],
+  OTQ: ["on the quiet", "on-the-quiet", "otq"],
+  TBH: ["the better half", "better half", "tbh", "bh"],
+};
+
+// Precedence: if OTQ appears, treat it as OTQ even if "Jules Taylor" also appears
+const detectBrandCode = (row) => {
+  const fields = [
+    row.AdditionalAttribute3,
+    row.BrandCode,
+    row.Brand,
+    row.ProductName,
+    row.Stock,
+    row.ProductDescription,
+  ]
+    .filter(Boolean)
+    .map((v) => String(v).trim());
+
+  const hay = fields.join(" | ");
+  const hayLower = hay.toLowerCase();
+  const hayUpper = hay.toUpperCase();
+
+  // 1) Token / underscore-code detection (common for codes like "JTW_SAB_2023")
+  const hasCodeToken = (code) =>
+    hayUpper === code ||
+    hayUpper.includes(`_${code}_`) ||
+    hayUpper.startsWith(`${code}_`) ||
+    hayUpper.endsWith(`_${code}`) ||
+    new RegExp(`\\b${code}\\b`, "i").test(hay);
+
+  // OTQ first (because OTQ rows often still contain "Jules Taylor")
+  if (hasCodeToken("OTQ") || hayLower.includes(" on the quiet ") || hayLower.includes("on the quiet") || hayLower.includes("otq")) {
+    return "OTQ";
+  }
+
+  // TBH
+  if (hasCodeToken("TBH") || hasCodeToken("BH")) return "TBH";
+  if (hayLower.includes("the better half") || hayLower.includes("better half")) return "TBH";
+
+  // JTW
+  if (hasCodeToken("JTW")) return "JTW";
+  if (hayLower.includes("jules taylor")) return "JTW";
+
+  return "";
+};
+
+const matchesBrand = (row, brandFilter /* string like "jtw"/"otq"/"tbh" */) => {
+  if (!brandFilter) return true;
+  const target = normalizeBrandFilter(brandFilter).toUpperCase();
+  if (!target) return true;
+
+  const detected = detectBrandCode(row);
+  if (detected) return detected === target;
+
+  // If detection fails, do a wineType-style “variations” match across fields
+  const fields = [
+    row.AdditionalAttribute3,
+    row.BrandCode,
+    row.Brand,
+    row.ProductName,
+    row.Stock,
+    row.ProductDescription,
+  ]
+    .filter(Boolean)
+    .map((v) => String(v).toLowerCase());
+
+  const text = fields.join(" | ");
+
+  // fallback variations
+  const names = brandCodeToNames[target] || [];
+  for (const name of names) {
+    const variations = [
+      name,
+      name.replace(/\s+/g, ""),          // "thebetterhalf"
+      name.replace(/\s+/g, "_"),         // "the_better_half"
+      name.toUpperCase(),
+      name.toUpperCase().replace(/\s+/g, "_"),
+    ];
+    for (const v of variations) {
+      if (text.includes(String(v).toLowerCase())) return true;
+    }
+  }
+
+  // also accept raw code matches in the joined text
+  if (text.includes(target.toLowerCase())) return true;
+
+  return false;
+};
+
 // If Ireland is selected, divide all numeric values in the rows by 12
 function divideBy12IfIreland(rows, countryFilter) {
   const cf = (countryFilter || "").toLowerCase();
@@ -47,29 +145,6 @@ function divideBy12IfIreland(rows, countryFilter) {
   });
 }
 
-// ---- Brand helpers (drop-in) ----
-const normalizeBrandCode = (c) => {
-  const up = String(c || "").toUpperCase().trim();
-  return up === "BH" ? "TBH" : up; // treat BH as TBH
-};
-
-const extractBrandCode = (row) => {
-  // Best source: AdditionalAttribute3 like "JTW_SAB_2023"
-  const aa3 = String(row.AdditionalAttribute3 || row.Stock || "").toUpperCase().trim();
-  if (aa3) {
-    const tokens = aa3.split("_").map(t => t.trim()).filter(Boolean);
-    const hit = tokens.find(t => ["JTW", "TBH", "BH", "OTQ"].includes(t));
-    if (hit) return normalizeBrandCode(hit);
-  }
-
-  // Fallback: product/stock text
-  const name = String(row.ProductName || row.Stock || "").toLowerCase();
-  if (name.includes("jules taylor")) return "JTW";
-  if (name.includes("better half")) return "TBH";
-  if (name.includes("on the quiet")) return "OTQ";
-
-  return "";
-};
 
 /**
  * Parses dates from various Excel formats (M/D/Y, D/M/Y, Y-M-D, etc.)
@@ -325,17 +400,116 @@ export default function Dashboard() {
           distributorStockOnHand = divideBy12IfIreland(distributorStockOnHand, countryFilter);
           salesData = divideBy12IfIreland(salesData, countryFilter);
 
-          if ((countryFilter || "").toLowerCase() === "ire") {
-            console.log("[IRE] salesData sample BEFORE FILTERING:", salesData[0]);
-            console.log("[IRE] salesData keys:", salesData[0] ? Object.keys(salesData[0]) : "no rows");
-          }
 
-          
+
+          // ───────── Pre-fix distributor stock rows BEFORE filtering ─────────
+          const distributorStockOnHandFixed = (distributorStockOnHand || [])
+          .map((row) => {
+            const c = normalizeCountryCode(row?.AdditionalAttribute2 || row?.Market || "").toLowerCase();
+
+            const pn = String(row?.ProductName || "").trim();
+            const prod = String(row?.Product || "").trim();
+
+            const pnLower = pn.toLowerCase();
+            const prodLower = prod.toLowerCase();
+
+            // USA junk (what you already had)
+            const isJunkUSA =
+              !pn ||
+              pnLower === "country" ||
+              pnLower === "wines" ||
+              pnLower === "total" ||
+              pnLower === "usa";
+
+            // AU-B junk/header rows seen in your console.table
+            const isJunkAUB =
+              !pn ||
+              pnLower.includes("bacchus group") ||
+              pnLower.includes("options:") ||
+              pnLower === "item" ||
+              pnLower === "total" ||
+              prodLower === "description";
+
+            // ✅ USA: fix ProductName from Product if junk
+            if (c === "usa" && isJunkUSA && prod) {
+              return { ...row, ProductName: prod };
+            }
+
+            // ✅ AU-B: Product holds the wine name, ProductName holds the code
+            // Replace ProductName with Product (only if Product looks real)
+            if (c === "au-b") {
+              // If Product is a real wine description, prefer it
+              const productLooksReal =
+                prod &&
+                prodLower !== "description" &&
+                (prodLower.includes("jules taylor") ||
+                  prodLower.includes("the better half") ||
+                  prodLower.includes("on the quiet") ||
+                  prodLower.includes("sauvignon") ||
+                  prodLower.includes("pinot") ||
+                  prodLower.includes("chardonnay") ||
+                  prodLower.includes("riesling") ||
+                  prodLower.includes("gruner") ||
+                  prodLower.includes("ros"));
+
+              if (productLooksReal) {
+                return { ...row, ProductName: prod }; // ✅ key fix for AU-B
+              }
+            }
+
+            return row;
+          })
+          // ✅ remove junk rows entirely so they don't pollute brand detection / filters
+          .filter((row) => {
+            const c = normalizeCountryCode(row?.AdditionalAttribute2 || row?.Market || "").toLowerCase();
+            if (c !== "au-b") return true;
+
+            const pn = String(row?.ProductName || "").trim().toLowerCase();
+            const prod = String(row?.Product || "").trim().toLowerCase();
+
+            if (!pn) return false;
+            if (pn.includes("bacchus group")) return false;
+            if (pn.includes("options:")) return false;
+            if (pn === "item") return false;
+            if (pn === "total") return false;
+            if (prod === "description") return false;
+
+            return true;
+          });
+
+          // ✅ DEBUG: confirm pre-fix worked (AU-B + USA)
+          console.table(
+            (distributorStockOnHandFixed || [])
+              .filter(r => {
+                const c = normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || "").toLowerCase();
+                return c === "usa";
+              })
+              .slice(0, 30)
+              .map(r => {
+                const c = normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || "").toLowerCase();
+                return {
+                  market: r.AdditionalAttribute2 || r.Market,
+                  ProductName: r.ProductName,
+                  Product: r.Product,
+                  Stock: r.Stock,
+                  Brand: r.Brand,
+                  BrandCode: r.BrandCode,
+                  detected: detectBrandCode(r),
+
+                };
+              })
+          );
+
+
+
+         
+    
+
           // ───────── Filter Distributor Stock On Hand ─────────
           // Filter distributor stock on hand data (actual stock at distributors)
           const filteredDistributorStockOnHand = [];
-          for (let i = 0; i < distributorStockOnHand.length; i++) {
-            const r = distributorStockOnHand[i];
+          for (let i = 0; i < distributorStockOnHandFixed.length; i++) {
+            const r = distributorStockOnHandFixed[i];
             
             // Apply filters
             if (countryFilter) {
@@ -368,6 +542,13 @@ export default function Dashboard() {
                   !normalizedFilter.includes(locationWithoutPrefix)) {
                 continue;
               }
+            }
+
+          
+
+                      
+            if (brandFilter) {
+              if (!matchesBrand(r, brandFilter)) continue;
             }
             
             
@@ -472,11 +653,33 @@ export default function Dashboard() {
               if (!matchesWine) {
                 continue;
               }
+              
             }
             
             filteredDistributorStockOnHand.push(r);
           }
-          
+          // DEBUG: brand detection preview (Sales)
+          if (brandFilter) {
+            const usaRows = salesData
+              .filter(r => {
+                const raw = (r.AdditionalAttribute2 || r.Market || r.Country || "").toString().trim();
+                return normalizeCountryCode(raw).toLowerCase() === "usa";
+              })
+              .slice(0, 10);
+
+            console.table(
+              usaRows.map(r => ({
+                market: r.AdditionalAttribute2 || r.Market || r.Country,
+                ProductName: r.ProductName,
+                Product: r.Product,
+                Stock: r.Stock,
+                Brand: r.Brand,
+                BrandCode: r.BrandCode,
+                detected: detectBrandCode(r),
+              }))
+            );
+          }
+
           // ───────── Filter Sales Data (Depletion Summary) ─────────
           // Filter sales/depletion data for sales predictions
           const filteredStock = [];
@@ -562,6 +765,11 @@ export default function Dashboard() {
                 continue;
               }
             }
+
+              // ---- BRAND FILTER ----
+              if (brandFilter) {
+                if (!matchesBrand(r, brandFilter)) continue;
+              }
             
             // Early exit for wine type filter
             if (wineTypeFilter || wineTypeCode) {
@@ -586,6 +794,9 @@ export default function Dashboard() {
                   variety = parts.slice(1).join(' ').toLowerCase();
                 }
               }
+
+     
+
               
               // Map wine type codes (from filter) to their full names and variations for matching in AdditionalAttribute3
               // This is critical because AdditionalAttribute3 may contain full names, not codes
@@ -708,7 +919,28 @@ export default function Dashboard() {
           console.log("Unique exports raw AdditionalAttribute2:", [...new Set(exportsData.map(e => (e.AdditionalAttribute2||"").toString().trim()))]);
           console.log("brandFilter =", brandFilter);
 
-          
+          // DEBUG: brand detection preview (Exports) - USA only
+          if (brandFilter) {
+            const usaRows = exportsData
+              .filter(r => {
+                const raw = (r.AdditionalAttribute2 || r.Market || "").toString().trim();
+                return normalizeCountryCode(raw).toLowerCase() === "usa";
+              })
+              .slice(0, 10); // keep 100 if you want
+
+            console.table(
+              usaRows.map(r => ({
+                market: r.AdditionalAttribute2 || r.Market,
+                ProductName: r.ProductName,
+                Product: r.Product,
+                Stock: r.Stock,
+                Brand: r.Brand,
+                BrandCode: r.BrandCode,
+                detected: detectBrandCode(r),
+              }))
+            );
+          }
+
           
           // ───────── Filter Exports ─────────
           // Only include "waiting to ship" and "in transit" orders (exclude "complete")
@@ -976,11 +1208,11 @@ export default function Dashboard() {
               if (!matchesWine) continue;
             }
 
-            // ---- BRAND FILTER (drop-in) ----
+
             if (brandFilter) {
-              const brandCode = extractBrandCode(r);
-              if (!brandCode || brandCode.toLowerCase() !== brandFilter) continue;
+              if (!matchesBrand(r, brandFilter)) continue;
             }
+            
 
             
             filteredExports.push(r);
@@ -2196,9 +2428,10 @@ export default function Dashboard() {
               accuracy: null, // Can't calculate accuracy without actuals
             });
           }
-          setForecastAccuracyData(accuracyData);
+        ;
 
         }
+        setForecastAccuracyData(accuracyData)
         
 
         
@@ -2564,6 +2797,11 @@ export default function Dashboard() {
             
             // Skip if we still don't have a valid wine type code
             if (!wineCode) return;
+
+            if (brandFilter) {
+              if (!matchesBrand(item, brandFilter)) return false;
+            }
+            
             
             // Create key: distributor_wineCode (use lowercase for key matching)
             const key = `${distributorName.toLowerCase()}_${wineCode}`;

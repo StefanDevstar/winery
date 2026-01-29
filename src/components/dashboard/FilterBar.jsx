@@ -6,7 +6,129 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Filter, Calendar as CalendarIcon, TrendingUp } from "lucide-react";
 import { format } from "date-fns";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { normalizeCountryCode, normalizeBrandToCode } from "@/lib/utils";
+import { normalizeCountryCode } from "@/lib/utils";
+
+const ALLOWED_BRANDS = new Set(["jtw", "otq", "tbh", "bh"]);
+const sanitizeBrandValue = (v) => {
+  const s = String(v || "").toLowerCase();
+  return ALLOWED_BRANDS.has(s) ? s : "all";
+};
+
+// ---- Brand filtering (same pattern as wineType) ----
+const normalizeBrandFilter = (b) => {
+  const up = String(b || "").toUpperCase().trim();
+  if (!up) return "";
+  if (up === "BH") return "TBH"; // treat BH as TBH
+  return up;
+};
+
+const brandCodeToNames = {
+  JTW: ["jules taylor", "jules", "jt", "jtw"],
+  OTQ: ["on the quiet", "on-the-quiet", "otq"],
+  TBH: ["the better half", "better half", "tbh", "bh"],
+};
+
+// Precedence: if OTQ appears, treat it as OTQ even if "Jules Taylor" also appears
+const detectBrandCode = (row) => {
+  const fields = [
+    row.AdditionalAttribute3,
+    row.BrandCode,
+    row.Brand,
+    row.ProductName,
+    row.Product,
+    row.Stock,
+    row.SKU,
+    row.Code,
+    row.ProductDescription,
+    row["Product Description (SKU)"],
+    row["Wine Name"],
+    row["Wines"],
+  ]
+    .filter(Boolean)
+    .map((v) => String(v).trim());
+
+  const hay = fields.join(" | ");
+  const hayLower = hay.toLowerCase();
+  const hayUpper = hay.toUpperCase();
+
+  // 1) Token / underscore-code detection (common for codes like "JTW_SAB_2023")
+  const hasCodeToken = (code) =>
+    hayUpper === code ||
+    hayUpper.includes(`_${code}_`) ||
+    hayUpper.startsWith(`${code}_`) ||
+    hayUpper.endsWith(`_${code}`) ||
+    new RegExp(`\\b${code}\\b`, "i").test(hay);
+
+  // OTQ first (because OTQ rows often still contain "Jules Taylor")
+  if (
+    hasCodeToken("OTQ") ||
+    hayLower.includes("on the quiet") ||
+    new RegExp(`\\botq\\b`, "i").test(hay)
+  ) {
+    return "OTQ";
+  }
+
+  // TBH
+  if (hasCodeToken("TBH") || hasCodeToken("BH")) return "TBH";
+  if (hayLower.includes("the better half") || hayLower.includes("better half")) return "TBH";
+
+  // JTW
+  if (hasCodeToken("JTW")) return "JTW";
+  if (hayLower.includes("jules taylor")) return "JTW";
+
+  return "";
+};
+
+const matchesBrand = (row, brandFilter /* string like "jtw"/"otq"/"tbh" */) => {
+  if (!brandFilter || brandFilter === "all") return true;
+  const target = normalizeBrandFilter(brandFilter).toUpperCase();
+  if (!target) return true;
+
+  const detected = detectBrandCode(row);
+  if (detected) return detected === target;
+
+  // If detection fails, do a wineType-style “variations” match across fields
+  const fields = [
+    row.AdditionalAttribute3,
+    row.BrandCode,
+    row.Brand,
+    row.ProductName,
+    row.Product,
+    row.Stock,
+    row.SKU,
+    row.Code,
+    row.ProductDescription,
+    row["Product Description (SKU)"],
+    row["Wine Name"],
+    row["Wines"],
+  ]
+    .filter(Boolean)
+    .map((v) => String(v).toLowerCase());
+
+  const text = fields.join(" | ");
+
+  // fallback variations
+  const names = brandCodeToNames[target] || [];
+  for (const name of names) {
+    const variations = [
+      name,
+      name.replace(/\s+/g, ""),      // "thebetterhalf"
+      name.replace(/\s+/g, "_"),     // "the_better_half"
+      name.toUpperCase(),
+      name.toUpperCase().replace(/\s+/g, "_"),
+    ];
+    for (const v of variations) {
+      if (text.includes(String(v).toLowerCase())) return true;
+    }
+  }
+
+  // also accept raw code matches in the joined text
+  if (text.includes(target.toLowerCase())) return true;
+
+  return false;
+};
+
+
 
 export default function FilterBar({ filters, onFilterChange }) {
   const [dateRange, setDateRange] = React.useState({
@@ -136,14 +258,14 @@ export default function FilterBar({ filters, onFilterChange }) {
         });
   
       // ---------- Selected filters ----------
-      const countryFilter =
-        filters.country === "all" ? null : String(filters.country || "").toLowerCase();
-      const brandFilter =
-        filters.brand === "all" ? null : String(filters.brand || "").toLowerCase();
-  
       // Combine data so options work even if one dataset is missing
       const allData = [...distributorStock, ...salesData];
-  
+
+      // ---------- Selected filters ----------
+      const countryFilter =
+        filters.country === "all" ? null : String(filters.country || "").toLowerCase();
+
+      // filter by country FIRST
       const countryFilteredData = countryFilter
         ? allData.filter((r) => {
             const raw = r.AdditionalAttribute2 || r.Country || r.Market || "";
@@ -152,7 +274,25 @@ export default function FilterBar({ filters, onFilterChange }) {
             return cc === want;
           })
         : allData;
-  
+
+      // IMPORTANT: brand filter can be stale (old numeric IDs) -> sanitize
+      const brandValue = sanitizeBrandValue(filters.brand);
+      const brandFilter = brandValue === "all" ? "" : brandValue;
+
+      // ---------- Brand dropdown (ONLY these 3) ----------
+      const brands = [
+        { code: "jtw", name: "Jules Taylor" },
+        { code: "otq", name: "On the Quiet" },
+        { code: "tbh", name: "The Better Half" },
+      ];
+
+      // ---------- Apply brand filter before wine types ----------
+      const brandFilteredData = brandFilter
+        ? countryFilteredData.filter((r) => matchesBrand(r, brandFilter))
+        : countryFilteredData;
+
+
+
       // ---------- Distributor + State options ----------
       const locationSet = new Set();
       const stateSet = new Set();
@@ -178,58 +318,8 @@ export default function FilterBar({ filters, onFilterChange }) {
       const distributors = Array.from(locationSet).sort((a, b) => a.localeCompare(b));
       const states = Array.from(stateSet).sort((a, b) => a.localeCompare(b));
   
-      // ---------- Brand parsing (works across your sheets) ----------
-      const brandNameMap = {
-        jtw: "Jules Taylor",
-        tbh: "The Better Half",
-        otq: "On the Quiet",
-      };
 
-  
-      const getBrandCodeFromRow = (r) => {
-        // Priority: explicit brand columns (your normalized stock has BrandCode / Brand)
-        const direct =
-          r.BrandCode ||
-          r.Brand ||
-          r["Brand"] ||
-          "";
-  
-        let code = normalizeBrandToCode(direct);
-        if (code) return code;
-  
-        // Fallback: look in known text columns (matches your real Excel columns)
-        const fallback =
-          r["Wine Name"] ||
-          r["Wines"] ||
-          r["Product Description (SKU)"] ||
-          r.Stock ||
-          r.SKU ||
-          r.Code ||
-          r.ProductName ||
-          r.Product ||
-          r.AdditionalAttribute3 ||
-          "";
-  
-        return normalizeBrandToCode(fallback);
-      };
-  
-      // Build brand dropdown from countryFilteredData
-      const brandMap = new Map(); // code -> name
-      countryFilteredData.forEach((r) => {
-        const code = getBrandCodeFromRow(r);
-        if (!code) return;
-        if (!brandMap.has(code)) brandMap.set(code, brandNameMap[code] || code.toUpperCase());
-      });
-  
-      const brands = Array.from(brandMap.entries())
-        .map(([code, name]) => ({ code, name }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-  
-      // ---------- Apply brand filter before wine types (links brand -> variety) ----------
-      const brandFilteredData = brandFilter
-        ? countryFilteredData.filter((r) => getBrandCodeFromRow(r) === brandFilter)
-        : countryFilteredData;
-  
+
       // ---------- Variety / Wine type parsing ----------
       const wineNameMap = {
         SAB: "Sauvignon Blanc",
@@ -395,7 +485,7 @@ export default function FilterBar({ filters, onFilterChange }) {
             </Select>
           )}
           <Select
-            value={filters.brand || "all"}
+            value={sanitizeBrandValue(filters.brand)}
             onValueChange={(value) => {
               console.log("[UI] brand changed ->", value);
               console.log("[UI] filters BEFORE ->", filters);
