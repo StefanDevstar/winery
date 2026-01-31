@@ -11,6 +11,45 @@ import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
 
+// ───────── NZ Channel helpers (Dashboard-only) ─────────
+
+function normalizeChannel(v) {
+  const s = String(v ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+
+  // IMPORTANT: if it's truly missing/blank, return "" (not "-")
+  // so option builders can detect "no data"
+  if (!s) return "";
+
+  // real "unspecified" values from sheet
+  if (s === "-" || s === "na" || s === "n/a") return "-";
+
+  if (s.includes("grocery")) return "grocery";
+  if (s.replace(/\s+/g, "").includes("onpremise")) return "on premise";
+  if (s.replace(/\s+/g, "").includes("offpremise")) return "off premise";
+
+  return s;
+}
+
+function getRowChannel(row) {
+  // ✅ include _channel FIRST (your NZ normalized data uses this)
+  return normalizeChannel(
+    row?._channel ??
+    row?.Channel ??
+    row?.channel ??
+    row?.["Sales Channel"] ??
+    row?.["CHANNEL"]
+  );
+}
+
+function matchesChannel(row, channelFilter) {
+  if (!channelFilter || channelFilter === "all") return true;
+  return getRowChannel(row) === normalizeChannel(channelFilter);
+}
+
 // ---- Brand filtering (same pattern as wineType) ----
 const normalizeBrandFilter = (b) => {
   const up = String(b || "").toUpperCase().trim();
@@ -214,6 +253,7 @@ export default function Dashboard() {
     state: "all", // State filter for USA
     wineType: "all",
     brand: "all",
+    channel: "all",
     year: "all",
     viewMode: "historical",
     forwardLookingMonths: 3,
@@ -340,6 +380,7 @@ export default function Dashboard() {
               if (salesMeta.sheetNames && Array.isArray(salesMeta.sheetNames)) {
                 // Only load specific distributor sheets: IRE, NZL, AU-C
                 const allowedSheets = ['IRE', 'NZL', 'USA', 'AU-B', 'AU-C'];
+                
                 salesMeta.sheetNames.forEach(sheetName => {
                   // Check if this sheet is in the allowed list (case-insensitive)
                   const normalizedSheetName = sheetName.toUpperCase();
@@ -368,6 +409,29 @@ export default function Dashboard() {
               // Error parsing sales metadata
             }
           }
+          const nzRows = (salesData || []).filter(r =>
+            normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || r?.Country || "").toLowerCase() === "nzl"
+          );
+          
+          console.log("[NZ] rows:", nzRows.length);
+          console.log("[NZ] keys sample:", nzRows[0] ? Object.keys(nzRows[0]) : null);
+          
+          console.log(
+            "[NZ] unique _channel (first 20):",
+            Array.from(new Set(nzRows.map(r => String(r?._channel ?? "").trim()))).slice(0, 20)
+          );
+          
+          console.table(
+            nzRows.slice(0, 15).map(r => ({
+              market: normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || r?.Country || "").toLowerCase(),
+              ProductName: r?.ProductName,
+              _channel: r?._channel,
+              Channel_raw:
+                r?._channel ?? r?.Channel ?? r?.channel ?? r?.["Sales Channel"] ?? r?.["CHANNEL"],
+              Channel_norm: getRowChannel(r),
+            }))
+          );
+          
 
           // Ensure data is arrays
           if (!Array.isArray(salesData)) {
@@ -396,6 +460,11 @@ export default function Dashboard() {
           const wineTypeCode = filters.wineType === "all" ? null : filters.wineType.split("_")[0];
           const yearFilter = filters.year === "all" ? null : filters.year.toString();
           const brandFilter = filters.brand && filters.brand !== "all" ? filters.brand.toLowerCase() : null;
+          const channelFilter =
+            countryFilter === "nzl" && filters.channel && filters.channel !== "all"
+              ? normalizeChannel(filters.channel)
+              : null;
+
 
           distributorStockOnHand = divideBy12IfIreland(distributorStockOnHand, countryFilter);
           salesData = divideBy12IfIreland(salesData, countryFilter);
@@ -459,51 +528,8 @@ export default function Dashboard() {
 
             return row;
           })
-          // ✅ remove junk rows entirely so they don't pollute brand detection / filters
-          .filter((row) => {
-            const c = normalizeCountryCode(row?.AdditionalAttribute2 || row?.Market || "").toLowerCase();
-            if (c !== "au-b") return true;
 
-            const pn = String(row?.ProductName || "").trim().toLowerCase();
-            const prod = String(row?.Product || "").trim().toLowerCase();
-
-            if (!pn) return false;
-            if (pn.includes("bacchus group")) return false;
-            if (pn.includes("options:")) return false;
-            if (pn === "item") return false;
-            if (pn === "total") return false;
-            if (prod === "description") return false;
-
-            return true;
-          });
-
-          // ✅ DEBUG: confirm pre-fix worked (AU-B + USA)
-          console.table(
-            (distributorStockOnHandFixed || [])
-              .filter(r => {
-                const c = normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || "").toLowerCase();
-                return c === "usa";
-              })
-              .slice(0, 30)
-              .map(r => {
-                const c = normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || "").toLowerCase();
-                return {
-                  market: r.AdditionalAttribute2 || r.Market,
-                  ProductName: r.ProductName,
-                  Product: r.Product,
-                  Stock: r.Stock,
-                  Brand: r.Brand,
-                  BrandCode: r.BrandCode,
-                  detected: detectBrandCode(r),
-
-                };
-              })
-          );
-
-
-
-         
-    
+        
 
           // ───────── Filter Distributor Stock On Hand ─────────
           // Filter distributor stock on hand data (actual stock at distributors)
@@ -658,27 +684,46 @@ export default function Dashboard() {
             
             filteredDistributorStockOnHand.push(r);
           }
-          // DEBUG: brand detection preview (Sales)
-          if (brandFilter) {
-            const usaRows = salesData
+          // DEBUG: channel detection preview (Sales / depletion summary)
+          if (countryFilter === "nzl") {
+            const channelKeyCandidates = ["Channel", "channel", "CHANNEL", "Sales Channel", "sales_channel"];
+            const channelKey = channelKeyCandidates.find(k => salesData?.some(r => r && r[k] != null && String(r[k]).trim() !== "")) || null;
+
+            const nzRows = salesData
               .filter(r => {
                 const raw = (r.AdditionalAttribute2 || r.Market || r.Country || "").toString().trim();
-                return normalizeCountryCode(raw).toLowerCase() === "usa";
+                return normalizeCountryCode(raw).toLowerCase() === "nzl";
               })
               .slice(0, 10);
 
+            console.log("[DEBUG] NZ channelKey picked:", channelKey);
+            console.log("[DEBUG] NZ rows (sample) count:", nzRows.length);
+
             console.table(
-              usaRows.map(r => ({
-                market: r.AdditionalAttribute2 || r.Market || r.Country,
-                ProductName: r.ProductName,
-                Product: r.Product,
-                Stock: r.Stock,
-                Brand: r.Brand,
-                BrandCode: r.BrandCode,
-                detected: detectBrandCode(r),
-              }))
+              nzRows.map(r => {
+                const rawCh =
+                  (channelKey ? r?.[channelKey] : null) ??
+                  r?.Channel ??
+                  r?.channel ??
+                  r?.["Sales Channel"] ??
+                  r?.["CHANNEL"];
+
+                return {
+                  market: r.AdditionalAttribute2 || r.Market || r.Country,
+                  ProductName: r.ProductName,
+                  Brand: r.Brand,
+                  BrandCode: r.BrandCode,
+                  Channel_raw: rawCh,
+                  Channel_norm: normalizeChannel(rawCh),
+                };
+              })
             );
           }
+
+          console.log("NZ sales sample keys:", salesData[0] ? Object.keys(salesData[0]) : []);
+
+
+
 
           // ───────── Filter Sales Data (Depletion Summary) ─────────
           // Filter sales/depletion data for sales predictions
@@ -695,6 +740,11 @@ export default function Dashboard() {
             
               if (countryCode !== normalizedFilter) continue;
             }
+            // NZ only: Channel filter
+            if (channelFilter) {
+              if (!matchesChannel(r, channelFilter)) continue;
+            }
+
             
             
             
@@ -918,6 +968,7 @@ export default function Dashboard() {
           console.log("Unique sales raw AdditionalAttribute2:", [...new Set(salesData.map(r => (r.AdditionalAttribute2||"").toString().trim()))]);
           console.log("Unique exports raw AdditionalAttribute2:", [...new Set(exportsData.map(e => (e.AdditionalAttribute2||"").toString().trim()))]);
           console.log("brandFilter =", brandFilter);
+          console.log("channelFilter =", channelFilter);
 
           // DEBUG: brand detection preview (Exports) - USA only
           if (brandFilter) {
