@@ -295,6 +295,15 @@ export default function Dashboard() {
   }, []); // Only load once on mount
 
   useEffect(() => {
+    console.log("normalizeCountryCode tests:", {
+      "au-b": normalizeCountryCode("au-b"),
+      "au_b": normalizeCountryCode("au_b"),
+      "AUB": normalizeCountryCode("AUB"),
+      "au-c": normalizeCountryCode("au-c"),
+      "ire": normalizeCountryCode("ire"),
+      "nzl": normalizeCountryCode("nzl"),
+    });
+    
     if (!rawData) return;
     
     const loadAndProcessData = () => {
@@ -2677,34 +2686,6 @@ export default function Dashboard() {
           }
         }
         
-        console.log(
-          "WAREHOUSE unique market-ish fields:",
-          [...new Set(warehouseStockData.map(x => (x.Market || x.AdditionalAttribute2 || x._sheetName || "").toString().trim()))]
-        );
-        
-        console.log("WAREHOUSE sheets actually loaded:", [...new Set(warehouseStockData.map(r => r._sheetName))]);
-        const PK_RE = /\b(6|12)\s*(pk|pck)\b/i;
-
-      console.log(
-        "WAREHOUSE first pk-bearing cells:",
-        warehouseStockData.slice(0, 20).map(r => {
-          const od = r._originalData && typeof r._originalData === "object" ? r._originalData : {};
-          const hits = [];
-
-          // check top-level first
-          for (const [k, v] of Object.entries(r)) {
-            if (typeof v === "string" && PK_RE.test(v)) hits.push({ where: "row", k, v });
-          }
-          // then original
-          for (const [k, v] of Object.entries(od)) {
-            if (typeof v === "string" && PK_RE.test(v)) hits.push({ where: "_originalData", k, v });
-          }
-
-          return hits[0] || null;
-        }).filter(Boolean)
-      );
-
-        
         if (warehouseStockData && Array.isArray(warehouseStockData) && warehouseStockData.length > 0) {
           // Filter warehouse stock by country and wine type
           // Note: warehouse stock data uses OnHand, Allocated, Pending, Available (capitalized)
@@ -2802,6 +2783,7 @@ export default function Dashboard() {
             
             return true;
           });
+          
           
           // Group by distributor (AdditionalAttribute2) and wine code
           // IMPORTANT: 
@@ -3063,26 +3045,67 @@ export default function Dashboard() {
 
   // Debounce filter changes to prevent excessive recalculations
   const filterTimeoutRef = React.useRef(null);
-  
-  const handleFilterChange = useCallback((type, value) => {
-    // Clear existing timeout
-    if (filterTimeoutRef.current) {
-      clearTimeout(filterTimeoutRef.current);
-    }
-    
-    // Debounce filter changes by 150ms to prevent lag
-    filterTimeoutRef.current = setTimeout(() => {
-      setFilters((prev) => {
-        // If country is changing, reset appropriate filters
-        if (type === 'country') {
-            // When switching away from USA, reset state filter
-            return { ...prev, [type]: value, distributor: 'all', state: 'all' };
+
+const KEY_MAP = {
+  countryFilter: "country",
+  brandFilter: "brand",
+  wineTypeFilter: "wineType",
+  distributorFilter: "distributor",
+  stateFilter: "state",
+  channelFilter: "channel",
+  yearFilter: "year",
+};
+
+const normalizeKey = (k) => KEY_MAP[k] || k;
+
+const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
+  if (filterTimeoutRef.current) clearTimeout(filterTimeoutRef.current);
+
+  filterTimeoutRef.current = setTimeout(() => {
+    setFilters((prev) => {
+      // ✅ Case 1: FilterBar calls onFilterChange({ ... })
+      if (typeOrObj && typeof typeOrObj === "object") {
+        const next = { ...prev };
+
+        for (const [k, v] of Object.entries(typeOrObj)) {
+          const key = normalizeKey(k);
+          next[key] = v;
         }
-        return { ...prev, [type]: value };
-      });
-    }, 150);
-  }, []);
+
+        // If country changed via object payload
+        if (Object.prototype.hasOwnProperty.call(typeOrObj, "country") ||
+            Object.prototype.hasOwnProperty.call(typeOrObj, "countryFilter")) {
+          next.distributor = "all";
+          next.state = "all";
+          // Optional resets (often helpful):
+          // next.channel = "all";
+          // next.wineType = "all";
+          // next.brand = "all";
+        }
+
+        console.log("[Dashboard] filters updated (object):", next);
+        return next;
+      }
+
+      // ✅ Case 2: FilterBar calls onFilterChange("countryFilter", "nzl") or ("country", "nzl")
+      const type = normalizeKey(typeOrObj);
+      const value = valueMaybe;
+
+      if (type === "country") {
+        const next = { ...prev, country: value, distributor: "all", state: "all" };
+        console.log("[Dashboard] country changed:", prev.country, "→", value, next);
+        return next;
+      }
+
+      const next = { ...prev, [type]: value };
+      console.log("[Dashboard] filter changed:", type, value, next);
+      return next;
+    });
+  }, 150);
+}, []);
+
   
+
   // Cleanup timeout on unmount
   React.useEffect(() => {
     return () => {
