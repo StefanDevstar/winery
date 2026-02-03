@@ -2671,6 +2671,7 @@ export default function Dashboard() {
         }
         
         
+        
         // Load warehouse stock data - aggregate from all sheets if needed
         let warehouseStockData = [];
         if (warehouseStock && Array.isArray(warehouseStock)) {
@@ -2762,6 +2763,45 @@ export default function Dashboard() {
         const dgHits = detectDGFGKey(warehouseStockData);
         console.log("[WAREHOUSE] DG/FG key candidates:", dgHits);
         console.table(dgHits.slice(0, 10));
+
+        function inferWarehouseMarketRaw(item) {
+          // 1) primary fields
+          const raw =
+            (item?.Market ||
+              item?.AdditionalAttribute2 ||
+              item?.market ||
+              item?.additionalAttribute2 ||
+              "").toString().trim();
+        
+          if (raw) return raw;
+        
+          // 2) fallback: look inside description-like fields
+          const text = [
+            item?.ProductName,
+            item?.Product,
+            item?.["Client Description"],
+            item?.clientDescription,
+            item?.Code,
+            item?.code,
+            item?._originalSKU,
+            item?._originalData?.["Client Description"],
+            item?._originalData?.ProductName,
+            item?._originalData?.Code,
+          ]
+            .filter(Boolean)
+            .map(v => String(v))
+            .join(" ");
+        
+          // IMPORTANT: word boundary so we don't match "NEU" etc
+          if (/\bEU\b/i.test(text)) return "EU";
+          if (/\bUSA\b/i.test(text)) return "USA";
+          if (/\bIRE\b|\bIRELAND\b/i.test(text)) return "IRE";
+          if (/\bNZL\b|\bNZ\b/i.test(text)) return "NZL";
+          if (/\bAU[-\s]?B\b|\bAUB\b/i.test(text)) return "AU-B";
+          if (/\bAU[-\s]?C\b|\bAUC\b/i.test(text)) return "AU-C";
+        
+          return ""; // still unknown
+        }
         
 
         
@@ -2784,13 +2824,19 @@ export default function Dashboard() {
             
             // Filter by country (if selected)
             if (countryFilter) {
-              const rawCountryCode = (item.Market || item.AdditionalAttribute2 || item.market || item.additionalAttribute2 || "");
-              const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
-              const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
-              if (countryCode !== normalizedFilter) {
-                return false;
-              }
+              const rawCountryCode = inferWarehouseMarketRaw(item);
+            
+              const cc = normalizeCountryCode(rawCountryCode).toLowerCase();
+              const want = normalizeCountryCode(countryFilter).toLowerCase();
+            
+              // ✅ EU stock can be used for Ireland (and any EU country you decide later)
+              const rawLower = String(rawCountryCode || "").toLowerCase().trim();
+              const isEU = /\beu\b/i.test(String(rawCountryCode || ""));
+              const euAssignable = want === "ire" && isEU;
+              
+              if (cc !== want && !euAssignable) return false;
             }
+            
             
             // Filter by wine type (if selected)
             if (wineTypeFilter && wineTypeFilter !== "all" && wineTypeCode) {
@@ -2869,7 +2915,6 @@ export default function Dashboard() {
             return true;
           });
 
-
           
           
           
@@ -2883,16 +2928,19 @@ export default function Dashboard() {
             // Get distributor name from AdditionalAttribute2
             // CRITICAL: Normalize distributor name to match Stock Float Projection format
             // Warehouse stock uses country codes (usa, ire, nzl, au-b), but we need to map to distributor names (USA, IRE, NZL, AU-B)
-            let rawDistributorName = (item.AdditionalAttribute2 || item.additionalAttribute2 || item.Market || item.market || "").trim();
+            let rawDistributorName = inferWarehouseMarketRaw(item).trim();
             if (!rawDistributorName) return;
+
             
             // Normalize distributor name to match Stock Float Projection format (USA, IRE, NZL, AU-B)
             // This ensures the lookup key matches winePredictedSalesMap keys
             let distributorName = rawDistributorName.toUpperCase();
             if (distributorName === 'USA' || distributorName === 'US' || distributorName.includes('USA')) {
               distributorName = 'USA';
+            } else if (distributorName.includes('EU')) {
+               distributorName = 'EU';
             } else if (distributorName === 'IRE' || distributorName === 'IRELAND' || distributorName.includes('IRE')) {
-              distributorName = 'IRE';
+               distributorName = 'IRE';
             } else if (distributorName === 'NZ' || distributorName === 'NZL' || distributorName === 'NEW ZEALAND' || distributorName.includes('NZ')) {
               distributorName = 'NZL';
             } else if (distributorName === 'AU-B' || distributorName === 'AUB' || distributorName.includes('AU-B')) {
@@ -2957,6 +3005,9 @@ export default function Dashboard() {
             wineStock.available += getWarehouseAvailable12pk(item);  
  
           });
+
+       
+          
           console.log(
             "WAREHOUSE available (raw vs 12pk-eq) sample:",
             filteredWarehouseStock.slice(0, 50).map(r => ({
