@@ -11,6 +11,7 @@ import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
 
+
 // ───────── NZ Channel helpers (Dashboard-only) ─────────
 
 function normalizeChannel(v) {
@@ -2653,6 +2654,22 @@ export default function Dashboard() {
         // Then subtract projected sales (same unit)
         
         const warehouseStockProjection = [];
+
+        function getWarehouseStockType(item) {
+          const v = item?._originalData?.["Stock On Hand"]; // yes, weird header but confirmed
+          return String(v ?? "").trim().toUpperCase();
+        }
+        
+        function isDryGoods(item) {
+          const t = getWarehouseStockType(item);
+          return t.includes("DRY"); // catches "DRY GOODS"
+        }
+        
+        function isFinishedGoods(item) {
+          const t = getWarehouseStockType(item);
+          return t.includes("FINISHED"); // catches "FINISHED GOODS"
+        }
+        
         
         // Load warehouse stock data - aggregate from all sheets if needed
         let warehouseStockData = [];
@@ -2685,6 +2702,68 @@ export default function Dashboard() {
             }
           }
         }
+
+        function detectDGFGKey(rows, maxRows = 500) {
+          const sample = (rows || []).slice(0, maxRows);
+        
+          // collect all keys (top-level)
+          const keys = new Set();
+          sample.forEach(r => Object.keys(r || {}).forEach(k => keys.add(k)));
+        
+          // also collect keys from _originalData (if present)
+          sample.forEach(r => Object.keys(r?._originalData || {}).forEach(k => keys.add(`_originalData.${k}`)));
+        
+          const hits = [];
+        
+          for (const k of keys) {
+            const getVal = (row) => {
+              if (!row) return null;
+              if (k.startsWith("_originalData.")) {
+                const kk = k.replace("_originalData.", "");
+                return row._originalData?.[kk];
+              }
+              return row[k];
+            };
+        
+            const vals = sample
+              .map(getVal)
+              .filter(v => v != null && String(v).trim() !== "")
+              .map(v => String(v).trim().toUpperCase());
+        
+            if (vals.length === 0) continue;
+        
+            // does this column contain DG/FG-ish values?
+            const uniq = Array.from(new Set(vals)).slice(0, 50);
+        
+            const hasDG = uniq.some(v => v === "DG" || v.includes("DRY"));
+            const hasFG = uniq.some(v => v === "FG" || v.includes("FINISHED"));
+        
+            // also allow columns that include both "DG" and "FG" somewhere
+            if (hasDG || hasFG) {
+              hits.push({
+                key: k,
+                hasDG,
+                hasFG,
+                sampleValues: uniq.slice(0, 10).join(" | "),
+                nonEmptyCount: vals.length,
+              });
+            }
+          }
+        
+          hits.sort((a, b) =>
+            (Number(b.hasDG) + Number(b.hasFG)) - (Number(a.hasDG) + Number(a.hasFG)) ||
+            b.nonEmptyCount - a.nonEmptyCount
+          );
+        
+          return hits;
+        }
+        
+        // ---- run it ----
+        const dgHits = detectDGFGKey(warehouseStockData);
+        console.log("[WAREHOUSE] DG/FG key candidates:", dgHits);
+        console.table(dgHits.slice(0, 10));
+        
+
         
         if (warehouseStockData && Array.isArray(warehouseStockData) && warehouseStockData.length > 0) {
           // Filter warehouse stock by country and wine type
@@ -2696,6 +2775,12 @@ export default function Dashboard() {
             if (!hasStockData) {
               return false;
             }
+
+            // ✅ NEW: ignore dry goods, keep finished goods
+              // If type is missing, choose what you want (keep or drop). I’d KEEP by default.
+              const stockType = getWarehouseStockType(item);
+              if (!stockType.includes("FINISHED")) return false;
+
             
             // Filter by country (if selected)
             if (countryFilter) {
@@ -2783,6 +2868,9 @@ export default function Dashboard() {
             
             return true;
           });
+
+
+          
           
           
           // Group by distributor (AdditionalAttribute2) and wine code
