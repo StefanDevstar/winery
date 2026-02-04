@@ -933,41 +933,53 @@ function parseNZLSheet(records) {
  * Structure: Wine Name, Quantity - Cartons, Customer/Project, State, etc.
  */
 function parseAUBSheet(records) {
-  // First filter out completely empty records
   const filteredRecords = records.filter(r => {
-    if (!r || typeof r !== 'object') return false;
-    return Object.values(r).some(v => v !== null && v !== undefined && String(v).trim() !== '');
+    if (!r || typeof r !== "object") return false;
+    return Object.values(r).some(v => v !== null && v !== undefined && String(v).trim() !== "");
   });
+
   
+
   return filteredRecords
-    .filter(r => r['Wine Name'] && r['Quantity - Cartons'])
+    .filter(r => r["Wine Name"] && r["Quantity - Cartons"])
     .map(r => {
-      const wineName = String(r['Wine Name'] || '').trim();
-      const quantity = parseFloat(String(r['Quantity - Cartons'] || '0').replace(/,/g, '')) || 0;
-      const customer = String(r['Customer/Project'] || '').trim();
-      const state = String(r.State || '').trim();
-      const month = String(r.Month || '').trim();
-      const year = String(r.Year || '').trim();
-      
-      // Extract brand/variety from wine name
+      const wineName = String(r["Wine Name"] || "").trim();
+      const quantity = parseFloat(String(r["Quantity - Cartons"] || "0").replace(/,/g, "")) || 0;
+      const customer = String(r["Customer/Project"] || "").trim();
+
+      const rawState = String(r.State || "").trim(); // e.g. HO, VIC, QLD, zzNS
+      const month = String(r.Month || "").trim();
+      const year = String(r.Year || "").trim();
+
       const parts = wineName.split(/\s+/);
-      const brand = parts[0] || '';
-      const variety = parts.slice(1).join(' ') || '';
-      
+      const brand = parts[0] || "";
+      const variety = parts.slice(1).join(" ") || "";
+
       return {
-        AdditionalAttribute2: 'au-b', // Preserve AU-B as separate country code
-        AdditionalAttribute3: normalizeWineTypeToCode(variety || wineName), // Wine code (SAB, PIN, etc.)
-        ProductName: wineName, // Product name
-        Location: state ? `${state}_${customer}`.substring(0, 50) : customer.substring(0, 50), // Location (State_Customer)
-        Available: quantity, // Quantity sold (depletion)
+        AdditionalAttribute2: "au-b",
+        AdditionalAttribute3: normalizeWineTypeToCode(variety || wineName),
+        ProductName: wineName,
+        // keep your current location format if you want:
+        Location: rawState
+          ? `${rawState}_${customer}`.substring(0, 50)
+          : customer.substring(0, 50),
+
+        // ✅ ADD THIS so state filters don’t become null:
+        State: rawState || null,
+
+        // ✅ Optional: if your dashboard expects AA4 for state:
+        AdditionalAttribute4: rawState || null,
+
+        Available: quantity,
         _month: month,
         _year: year,
         _customer: customer,
-        _sheetName: 'AU-B'
+        _sheetName: "AU-B",
       };
     })
-    .filter(record => !isEmptyRecord(record)); // Filter empty records
+    .filter(record => !isEmptyRecord(record));
 }
+
 
 /**
  * Parses AU-C sheet - Sales by Banner and Item
