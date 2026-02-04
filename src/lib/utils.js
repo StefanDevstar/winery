@@ -1762,228 +1762,341 @@ export function normalizeWarehouseStockData(records, sheetName = '') {
  * @param {string} sheetName - Name of the sheet
  * @returns {Array} - Normalized records
  */
-export function normalizeDistributorStockOnHandData(records, sheetName = '') {
+export function normalizeDistributorStockOnHandData(records, sheetName = "") {
   if (!Array.isArray(records) || records.length === 0) return [];
-  
+
   const normalized = [];
-  
-  // Records from parseExcel are already objects with header keys
-  // Each sheet represents a distributor, so use sheetName as the distributor name
-  const distributorName = sheetName || 'Unknown';
-  // Find the first non-empty record to get header keys
-  let firstRecord = null;
-  for (let i = 0; i < records.length; i++) {
-    const record = records[i];
-    if (record && typeof record === 'object' && Object.keys(record).length > 0) {
-      firstRecord = record;
-      break;
-    }
-  }
-  
-  if (!firstRecord) return [];
-  
-  const headerKeys = Object.keys(firstRecord);
-  
-  
-  // Find column keys by matching header names (case-insensitive, handles spaces/variations)
-  const findColumn = (searchTerms) => {
-    for (const term of searchTerms) {
-      const key = headerKeys.find(k => {
-        const headerVal = String(k || '').toUpperCase().trim();
-        const termUpper = term.toUpperCase();
-        // Exact match
-        if (headerVal === termUpper) return true;
-        // Contains match
-        if (headerVal.includes(termUpper) || termUpper.includes(headerVal)) return true;
-        // Match without spaces
-        if (headerVal.replace(/\s+/g, '') === termUpper.replace(/\s+/g, '')) return true;
-        // Match with underscores
-        if (headerVal.replace(/_/g, ' ') === termUpper || termUpper.replace(/_/g, ' ') === headerVal) return true;
-        return false;
-      });
-      if (key !== undefined) {
-        return key;
-      }
+  const distributorName = sheetName || "Unknown";
+  const upperSheetName = String(sheetName || "").toUpperCase();
+
+  // ---------- helpers ----------
+  const parseNumericValue = (value) => {
+    if (value === undefined || value === null || value === "") return 0;
+    const cleaned = String(value)
+      .replace(/,/g, "")
+      .replace(/[^\d.-]/g, "")
+      .trim();
+    const n = cleaned !== "" ? Number(cleaned) : 0;
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const extractStateFromDCLabel = (s) => {
+    const m = String(s || "").toUpperCase().match(/\b(NSW|VIC|QLD|SA|WA)\b/);
+    return m ? m[1] : "";
+  };
+
+  const findFirstRecord = () => {
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      if (r && typeof r === "object" && Object.keys(r).length > 0) return r;
     }
     return null;
   };
-  
-  // Find key columns - try multiple variations and common Excel column names
-  const productCol = findColumn(['Product', 'Product Description', 'Product Name', 'Description', 'Item', 'Wine', 'Wine Name', 'Product Description (SKU)', 'SKU Description']);
-  const skuCol = findColumn(['SKU', 'Code', 'Product Code', 'Item Code', 'WW Code', 'Product Code', 'Item', 'WW Code', 'Code']);
-  
-  // Sheet-specific "On Hand" column detection
-  // NZ sheet: Column 6 (index 5)
-  // USA sheet: Last column
-  // AU-B sheet: Last column
-  // IRE sheet: 4th column (index 3)
-  const upperSheetName = sheetName.toUpperCase();
-  let onHandCol = null;
-  let wineTypeCol = null;
-  
-  if (upperSheetName === 'NZ' || upperSheetName === 'NZL' || sheetName.includes('NZ')) {
-    // NZL sheet: Column 6 (index 5, 0-based)
-    if (headerKeys.length > 5) {
-      wineTypeCol = headerKeys[1];
-      onHandCol = headerKeys[4];
-    }
-  } else if (upperSheetName === 'USA' || sheetName.includes('USA')) {
-    // USA sheet: Last column for On Hand, second column (index 1) is State
-    if (headerKeys.length > 0) {
-      wineTypeCol = headerKeys[3];
-      onHandCol = headerKeys[4];
-    }
-  } else if (upperSheetName === 'AU-B' || upperSheetName === 'AUB' || sheetName.includes('AU-B')) {
-    // AU-B sheet: Last column
-    if (headerKeys.length > 0) {
-      wineTypeCol = headerKeys[1];
-      onHandCol = headerKeys[headerKeys.length - 1];
-    }
-  } else if (upperSheetName === 'IRE' || sheetName.includes('IRE')) {
-    // IRE sheet: 4th column (index 3)
-    if (headerKeys.length > 3) {
-      wineTypeCol = headerKeys[2];
-      onHandCol = headerKeys[3];
-    }
-  } else {
-    wineTypeCol = findColumn(['Description', 'Product']);
-    // For other sheets, try to find by name
-    onHandCol = findColumn(['On Hand', 'Column_5', 'Stock On Hand', 'Stock', 'Quantity', 'Qty', 'Current Stock', 'Stock On Hand', 'On Hand', 'Qty On Hand', 'On-Hand']);
-  }
-  
-  const countryCol = findColumn(['Country', 'Market', 'Region', 'Country Code', 'AdditionalAttribute2', 'Market Code']);
-  
-  if (!onHandCol) {
-    // Could not find "On Hand" column - will use fallback logic
-  }
-  
-  // Helper function to parse numeric values, handling currency symbols and formatting
-  const parseNumericValue = (value) => {
-    if (value === undefined || value === null || value === '') return 0;
-    const cleaned = String(value)
-      .replace(/[$€£¥,]/g, '') // Remove currency symbols and commas
-      .replace(/[^\d.-]/g, '') // Remove any remaining non-numeric except decimal and minus
-      .trim();
-    const parsed = cleaned !== '' && !isNaN(cleaned) ? parseFloat(cleaned) : 0;
-    return parsed;
-  };
-  
-  // Process all records (they're already objects with header keys)
-  for (let i = 0; i < records.length; i++) {
-    const row = records[i];
-    if (!row || typeof row !== 'object') continue;
-    
-    // Skip if this looks like a header row (check if all values are header-like strings)
-    const rowValues = Object.values(row);
-    const nonEmptyValues = rowValues.filter(v => v !== null && v !== undefined && String(v).trim() !== '');
-    if (nonEmptyValues.length > 0) {
-      const isHeaderRow = nonEmptyValues.every(v => {
-        const val = String(v || '').toUpperCase().trim();
-        return val.includes('DISTRIBUTOR') || 
-               val.includes('LOCATION') ||
-               val.includes('PRODUCT') || 
-               val.includes('SKU') ||
-               val.includes('ON HAND') ||
-               val.includes('STOCK') ||
-               val.includes('QUANTITY') ||
-               val.includes('CODE') ||
-               val.includes('DESCRIPTION');
+
+  const firstRecord = findFirstRecord();
+  if (!firstRecord) return [];
+
+  const headerKeys = Object.keys(firstRecord);
+
+  // Find column keys by matching header names (case-insensitive, handles spaces/variations)
+  const findColumn = (searchTerms) => {
+    for (const term of searchTerms) {
+      const key = headerKeys.find((k) => {
+        const headerVal = String(k || "").toUpperCase().trim();
+        const termUpper = String(term || "").toUpperCase().trim();
+
+        if (headerVal === termUpper) return true;
+        if (headerVal.includes(termUpper) || termUpper.includes(headerVal)) return true;
+
+        if (headerVal.replace(/\s+/g, "") === termUpper.replace(/\s+/g, "")) return true;
+
+        const a = headerVal.replace(/_/g, " ");
+        const b = termUpper.replace(/_/g, " ");
+        if (a === b) return true;
+
+        return false;
       });
-      if (isHeaderRow && i === 0) {
-        continue; // Skip first row if it's a header
+
+      if (key !== undefined) return key;
+    }
+    return null;
+  };
+
+  const inferMostNumericColumn = () => {
+    const sample = records.slice(0, Math.min(30, records.length));
+    let bestKey = null;
+    let bestScore = 0;
+
+    for (const key of headerKeys) {
+      let nonEmpty = 0;
+      let numeric = 0;
+
+      for (const r of sample) {
+        const v = r?.[key];
+        if (v == null) continue;
+        const s = String(v).trim();
+        if (!s) continue;
+
+        nonEmpty++;
+        const n = parseNumericValue(v);
+        if (Number.isFinite(n) && (n !== 0 || s === "0" || s === "0.0")) numeric++;
+      }
+
+      if (nonEmpty >= 5) {
+        const score = numeric / nonEmpty;
+        if (score > bestScore) {
+          bestScore = score;
+          bestKey = key;
+        }
       }
     }
-    
-    // Get product information
-    const product = productCol ? String(row[productCol] || '').trim() : '';
-    const sku = skuCol ? String(row[skuCol] || '').trim() : '';
-    const country = countryCol ? String(row[countryCol] || '').trim() : '';
-    
-    // Skip rows without product/SKU information
-    if (!product && !sku) continue;
-    
-    // Get stock on hand - this is the critical field
-    const onHand = onHandCol ? parseNumericValue(row[onHandCol]) : 0;
-    const wineType = wineTypeCol ? String(row[wineTypeCol] || '').trim() : '';
-    
-    // For USA data, get state from second column (index 1)
-    let state = '';
-    if ((upperSheetName === 'USA' || sheetName.includes('USA')) && headerKeys.length > 1) {
-      state = String(row[headerKeys[1]] || '').trim();
+
+    return bestScore >= 0.6 ? bestKey : null;
+  };
+
+  // ---------- AU-C (NEW pivot format) ----------
+  // Detect by sheet name OR by headers containing multiple DC columns
+  const looksLikeAUCByHeaders =
+    headerKeys.some((k) => /\bDC\b/i.test(String(k))) &&
+    headerKeys.some((k) => /\bNSW\b/i.test(String(k))) &&
+    headerKeys.some((k) => /\bVIC\b/i.test(String(k)));
+
+  const isAUC =
+    upperSheetName === "AU-C" ||
+    upperSheetName === "AUC" ||
+    upperSheetName.includes("AU-C") ||
+    looksLikeAUCByHeaders;
+
+  if (isAUC) {
+    const itemCol =
+      findColumn(["Item", "Product", "Description"]) ||
+      headerKeys[0];
+
+    const dcCols = headerKeys
+      .filter((k) => k !== itemCol)
+      .filter((k) => /\b(NSW|VIC|QLD|SA|WA)\b/i.test(String(k)));
+
+    for (let i = 0; i < records.length; i++) {
+      const row = records[i];
+      if (!row || typeof row !== "object") continue;
+
+      const item = String(row?.[itemCol] ?? "").trim();
+
+      // skip subheader row like "Current Quantity On Hand"
+      const subheader =
+        !item ||
+        /CURRENT\s+QUANTITY/i.test(item) ||
+        dcCols.some((c) => /CURRENT\s+QUANTITY/i.test(String(row?.[c] ?? "")));
+
+      if (subheader) continue;
+
+      const productDesc = item;
+      if (!productDesc) continue;
+
+      const wineTypeCode = normalizeWineTypeToCode(productDesc);
+
+      for (const c of dcCols) {
+        const onHand = parseNumericValue(row?.[c]);
+        if (onHand <= 0) continue;
+
+        const state = extractStateFromDCLabel(c) || c;
+
+        normalized.push({
+          Location: state,
+          Distributor: distributorName,
+
+          Product: productDesc,
+          ProductName: productDesc,
+          Code: productDesc, // AU-C format has no numeric item id
+
+          Brand: "",
+          BrandCode: "",
+          Vintage: "",
+          Variety: "",
+          VarietyCode: wineTypeCode,
+
+          Market: "au-c",
+          MarketCode: "AU-C",
+
+          OnHand: onHand,
+          StockOnHand: onHand,
+
+          AdditionalAttribute2: "au-c",
+          AdditionalAttribute3: wineTypeCode, // ✅ wine type code, not the qty
+
+          _sheetName: sheetName,
+          _dcCol: c,
+          _originalData: row,
+        });
+      }
     }
-  
-    // Parse SKU to extract components
+
+    // console.log("[DSOH normalize] AU-C in/out:", records.length, normalized.length);
+    return filterEmptyRecords(normalized);
+  }
+
+  // ---------- Other sheets (your existing behavior) ----------
+  const productCol = findColumn([
+    "Product",
+    "Product Description",
+    "Product Name",
+    "Description",
+    "Item",
+    "Wine",
+    "Wine Name",
+    "SKU Description",
+  ]);
+
+  const skuCol = findColumn([
+    "SKU",
+    "Code",
+    "Product Code",
+    "Item Code",
+    "WW Code",
+  ]);
+
+  const countryCol = findColumn([
+    "Country",
+    "Market",
+    "Region",
+    "Country Code",
+    "AdditionalAttribute2",
+    "Market Code",
+  ]);
+
+  let onHandCol = null;
+  let wineTypeCol = null;
+
+  if (upperSheetName === "NZ" || upperSheetName === "NZL" || upperSheetName.includes("NZ")) {
+    wineTypeCol = productCol || headerKeys[1];
+    onHandCol = findColumn(["SOH Qty", "On Hand", "Stock On Hand", "Qty"]) || headerKeys[4];
+  } else if (upperSheetName === "USA" || upperSheetName.includes("USA")) {
+    wineTypeCol = productCol || headerKeys[3];
+    onHandCol = findColumn(["On Hand", "Stock On Hand", "Qty"]) || headerKeys[4];
+  } else if (upperSheetName === "AU-B" || upperSheetName === "AUB" || upperSheetName.includes("AU-B")) {
+    wineTypeCol = productCol || headerKeys[1];
+    onHandCol = findColumn(["SOH Qty", "On Hand", "Stock On Hand", "Qty"]) || headerKeys[headerKeys.length - 1];
+  } else if (upperSheetName === "IRE" || upperSheetName.includes("IRE")) {
+    wineTypeCol = productCol || headerKeys[2];
+    onHandCol = findColumn(["SOH Qty", "On Hand", "Stock On Hand", "Qty"]) || headerKeys[3];
+  } else {
+    wineTypeCol = productCol || findColumn(["Description", "Product"]);
+    onHandCol = findColumn([
+      "On Hand",
+      "Stock On Hand",
+      "Stock",
+      "Quantity",
+      "Qty",
+      "Current Stock",
+      "Qty On Hand",
+      "On-Hand",
+    ]);
+  }
+
+  if (!onHandCol) onHandCol = inferMostNumericColumn();
+
+  for (let i = 0; i < records.length; i++) {
+    const row = records[i];
+    if (!row || typeof row !== "object") continue;
+
+    // Skip obvious header row (only if first row)
+    if (i === 0) {
+      const vals = Object.values(row)
+        .filter((v) => v != null && String(v).trim() !== "")
+        .map((v) => String(v).toUpperCase().trim());
+
+      const looksLikeHeader = vals.length > 0 && vals.every((v) =>
+        v.includes("DISTRIBUTOR") ||
+        v.includes("LOCATION") ||
+        v.includes("PRODUCT") ||
+        v.includes("SKU") ||
+        v.includes("ON HAND") ||
+        v.includes("STOCK") ||
+        v.includes("QUANTITY") ||
+        v.includes("CODE") ||
+        v.includes("DESCRIPTION")
+      );
+
+      if (looksLikeHeader) continue;
+    }
+
+    const product = productCol ? String(row[productCol] || "").trim() : "";
+    const sku = skuCol ? String(row[skuCol] || "").trim() : "";
+    const country = countryCol ? String(row[countryCol] || "").trim() : "";
+
+    if (!product && !sku) continue;
+
+    const onHand = onHandCol ? parseNumericValue(row[onHandCol]) : 0;
+    const wineType = wineTypeCol ? String(row[wineTypeCol] || "").trim() : "";
+
+    // USA: state usually in col index 1 or a "State" column
+    let state = "";
+    if (upperSheetName === "USA" || upperSheetName.includes("USA")) {
+      const stateCol = findColumn(["State"]) || (headerKeys.length > 1 ? headerKeys[1] : null);
+      if (stateCol) state = String(row[stateCol] || "").trim();
+    }
+
     const skuParts = parseProductSKU(sku || product);
-    
-    // Extract wine type code from wineType field using normalizeWineTypeToCode
-    // This handles variations like "SAUVIGNON BLANC", "JULES TAYLOR SAUVIGNON BLANC", etc.
+
     let wineTypeCode = normalizeWineTypeToCode(wineType || product || sku);
-    
-    // If not found from wineType field, try to extract from variety code in skuParts
     if (!wineTypeCode || wineTypeCode.length > 10) {
       wineTypeCode = normalizeWineTypeToCode(skuParts.varietyCode || skuParts.fullSKU);
     }
-    
-    // Extract wine code from SKU or product
-    const wineCode = skuParts.fullSKU || 
-                    (sku ? sku.toUpperCase() : '') ||
-                    (product ? product.split(' ').slice(0, 3).join('_').toUpperCase() : '');
-    
-    // Build AdditionalAttribute3 with ONLY wine type code (no prefix)
-    // Format: Just the wine type code (SAB, PIN, ROS, PIG, etc.)
-    let additionalAttribute3 = '';
-    if (wineTypeCode && wineTypeCode.length <= 10) { // Only use if it's a valid wine code (not full text)
+
+    const wineCode =
+      skuParts.fullSKU ||
+      (sku ? sku.toUpperCase() : "") ||
+      (product ? product.split(" ").slice(0, 3).join("_").toUpperCase() : "");
+
+    let additionalAttribute3 = "";
+    if (wineTypeCode && wineTypeCode.length <= 10) {
       additionalAttribute3 = wineTypeCode;
     } else {
-      // Fallback: try to extract wine type from wineCode or product
       const fallbackWineType = normalizeWineTypeToCode(wineCode || product || sku);
       if (fallbackWineType && fallbackWineType.length <= 10) {
         additionalAttribute3 = fallbackWineType;
       } else {
-        // Last fallback: use existing wine code if no wine type code found
-        additionalAttribute3 = wineCode || `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase();
+        additionalAttribute3 =
+          wineCode ||
+          `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase();
       }
     }
-    
-    // Build location string - for USA, include state if available
-    let location = distributorName;
-    if (state && (upperSheetName === 'USA' || sheetName.includes('USA'))) {
-      location = `${state}`;
-    }
-    
+
+    const location =
+      (state && (upperSheetName === "USA" || upperSheetName.includes("USA")))
+        ? state
+        : distributorName;
+
+    const normMarket = normalizeCountryCode(country || sheetName);
+
     normalized.push({
-      // Distributor information - use sheet name as distributor, include state for USA
       Location: location,
       Distributor: distributorName,
-      
-      // Product information
-      Product: wineType,
-      ProductName: product || (skuParts.brand ? `${skuParts.brand} ${skuParts.variety}`.trim() : ''),
-      Code: sku || skuParts.fullSKU,
-      
-      // SKU components
+
+      Product: wineType || product,
+      ProductName: product || (skuParts.brand ? `${skuParts.brand} ${skuParts.variety}`.trim() : ""),
+      Code: sku || skuParts.fullSKU || product,
+
       Brand: skuParts.brand,
       BrandCode: skuParts.brandCode,
       Vintage: skuParts.vintage,
       Variety: skuParts.variety,
-      VarietyCode: skuParts.varietyCode || wineTypeCode, // Use extracted wine type code
-      Market: normalizeCountryCode(country || sheetName), // Normalized country code
+      VarietyCode: skuParts.varietyCode || wineTypeCode,
+
+      Market: normMarket,
       MarketCode: skuParts.marketCode,
-      
-      // Stock information
-      OnHand: onHand, // Stock on hand at distributor
-      StockOnHand: onHand, // Alias for compatibility
-      
-      // Additional fields for Dashboard compatibility
-      AdditionalAttribute2: normalizeCountryCode(country || sheetName), // Normalized country code
-      AdditionalAttribute3: additionalAttribute3 || `${skuParts.brandCode}_${skuParts.varietyCode}_${skuParts.vintageCode}`.toUpperCase(),
-      
+
+      OnHand: onHand,
+      StockOnHand: onHand,
+
+      AdditionalAttribute2: normMarket,
+      AdditionalAttribute3: additionalAttribute3,
+
       _sheetName: sheetName,
-      _originalData: row
+      _originalData: row,
     });
   }
-  
-  
-  // Filter out empty records before returning
+
+  // console.log("[DSOH normalize] sheet:", sheetName, "in/out:", records.length, normalized.length);
   return filterEmptyRecords(normalized);
 }

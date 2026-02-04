@@ -11,6 +11,94 @@ import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
 
+function looksLikeAuC(v) {
+  const s = String(v || "").toLowerCase();
+  return s === "au-c" || s === "auc" || s.includes("au-c") || s.includes("au c");
+}
+
+function safeParseArray(raw) {
+  try {
+    const x = JSON.parse(raw);
+    return Array.isArray(x) ? x : [];
+  } catch {
+    return [];
+  }
+}
+
+function inferDSOHMarketRaw(row, fallbackSheetName = "") {
+  return (
+    row?.AdditionalAttribute3 ||
+    row?.Market ||
+    row?.MarketCode ||          // sometimes sheet puts AU-C here
+    row?._sheetName ||
+    fallbackSheetName |
+    ""
+  ).toString().trim();
+}
+
+function loadDistributorStockOnHand() {
+  const metaRaw = localStorage.getItem("vc_distributor_stock_on_hand_metadata");
+  const legacyRaw = localStorage.getItem("vc_distributor_stock_on_hand_data");
+
+  let rows = [];
+
+  // Prefer per-sheet if metadata exists
+  if (metaRaw) {
+    const meta = JSON.parse(metaRaw);
+    const sheetNames = Array.isArray(meta?.sheetNames) ? meta.sheetNames : [];
+
+    for (const sn of sheetNames) {
+      const k = `vc_distributor_stock_on_hand_data_${sn}`;
+      const sheetRows = safeParseArray(localStorage.getItem(k) || "[]");
+
+      // keep sheet name attached even if normalizer didn't
+      for (const r of sheetRows) {
+        rows.push({ ...r, _sheetName: r?._sheetName ?? sn });
+      }
+    }
+  }
+
+  // fallback to legacy aggregated if no sheet rows
+  if (rows.length === 0 && legacyRaw) {
+    rows = safeParseArray(legacyRaw);
+  }
+
+  // normalize market fields so filtering is consistent
+  rows = rows.map((r) => {
+    const rawMarket = inferDSOHMarketRaw(r, r?._sheetName);
+    const norm = normalizeCountryCode(rawMarket).toLowerCase();
+
+    return {
+      ...r,
+      _sheetName: r?._sheetName ?? rawMarket,
+      // only fill if missing/blank
+      AdditionalAttribute2:
+        (r?.AdditionalAttribute2 && String(r.AdditionalAttribute2).trim())
+          ? r.AdditionalAttribute2
+          : norm,
+      Market:
+        (r?.Market && String(r.Market).trim())
+          ? r.Market
+          : norm,
+    };
+  });
+
+  // Debug: counts per sheet/market
+  const bySheet = rows.reduce((acc, r) => {
+    const sn = String(r?._sheetName || "").trim() || "(none)";
+    acc[sn] = (acc[sn] || 0) + 1;
+    return acc;
+  }, {});
+  console.log("[DSOH] rows by _sheetName:", bySheet);
+
+  const uniqMarkets = Array.from(new Set(rows.map(r =>
+    normalizeCountryCode(inferDSOHMarketRaw(r, r?._sheetName)).toLowerCase()
+  ))).sort();
+  console.log("[DSOH] unique markets after normalize:", uniqMarkets);
+
+  return rows;
+}
+
 
 // ───────── NZ Channel helpers (Dashboard-only) ─────────
 
@@ -348,37 +436,9 @@ export default function Dashboard() {
             }
           }
 
-          // Load distributor stock on hand data - aggregate from all sheets if needed
-          let distributorStockOnHand = [];
-          if (stockOnHandDistributors && Array.isArray(stockOnHandDistributors)) {
-            distributorStockOnHand = stockOnHandDistributors;
-          } else {
-            // Try loading from individual sheets
-            const metadataRaw = localStorage.getItem("vc_distributor_stock_on_hand_metadata");
-            if (metadataRaw) {
-              try {
-                const metadata = JSON.parse(metadataRaw);
-                if (metadata.sheetNames && Array.isArray(metadata.sheetNames)) {
-                  metadata.sheetNames.forEach(sheetName => {
-                    const sheetKey = `vc_distributor_stock_on_hand_data_${sheetName}`;
-                    const sheetData = localStorage.getItem(sheetKey);
-                    if (sheetData) {
-                      try {
-                        const parsed = JSON.parse(sheetData);
-                        if (Array.isArray(parsed)) {
-                          distributorStockOnHand.push(...parsed);
-                        }
-                      } catch (e) {
-                        // Error parsing distributor stock on hand sheet
-                      }
-                    }
-                  });
-                }
-              } catch (e) {
-                // Error parsing distributor stock on hand metadata
-              }
-            }
-          }
+          let distributorStockOnHand = loadDistributorStockOnHand();
+
+      
 
           // Load sales data (depletion summary) - always load from individual sheets using salesMetadata
           // Only load specific distributor sheets: IRE, NZL, AU-C
@@ -484,7 +544,8 @@ export default function Dashboard() {
           // ───────── Pre-fix distributor stock rows BEFORE filtering ─────────
           const distributorStockOnHandFixed = (distributorStockOnHand || [])
           .map((row) => {
-            const c = normalizeCountryCode(row?.AdditionalAttribute2 || row?.Market || "").toLowerCase();
+            const c = normalizeCountryCode(row?.AdditionalAttribute2 || row?.Market || row?._sheetName || "").toLowerCase();
+
 
             const pn = String(row?.ProductName || "").trim();
             const prod = String(row?.Product || "").trim();
@@ -549,7 +610,8 @@ export default function Dashboard() {
             
             // Apply filters
             if (countryFilter) {
-              const rawCountryCode = (r.AdditionalAttribute2 || r.Market || "");
+              const rawCountryCode = (r.AdditionalAttribute2 || r.Market || r._sheetName || r.MarketCode || "");
+
               const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
               const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
               if (countryCode !== normalizedFilter) continue;
@@ -731,6 +793,48 @@ export default function Dashboard() {
           }
 
           console.log("NZ sales sample keys:", salesData[0] ? Object.keys(salesData[0]) : []);
+
+          // ───────── DEBUG: DSOH filter results ─────────
+const filteredMarkets = Array.from(new Set(
+  filteredDistributorStockOnHand.map(r =>
+    normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || r?._sheetName || "").toLowerCase()
+  )
+)).sort();
+
+console.log("[DSOH] POST-FILTER rows:", filteredDistributorStockOnHand.length);
+console.log("[DSOH] POST-FILTER normalized markets:", filteredMarkets);
+
+const filteredAuC = filteredDistributorStockOnHand.filter(r => {
+  const raw = r?._sheetName || r?.AdditionalAttribute2 || r?.Market || r?.Location || "";
+  const cc = normalizeCountryCode(raw).toLowerCase();
+  return cc === "au-c" || looksLikeAuC(raw);
+});
+
+console.log("[DSOH] POST-FILTER AU-C rows:", filteredAuC.length);
+console.table(
+  filteredAuC.slice(0, 30).map((r, i) => ({
+    i,
+    sheet: r?._sheetName,
+    aa2: r?.AdditionalAttribute2,
+    market: r?.Market,
+    location: r?.Location,
+    productName: r?.ProductName,
+    onHand: r?.OnHand ?? r?.StockOnHand ?? r?.Available ?? 0,
+    aa3: r?.AdditionalAttribute3,
+    normMarket: normalizeCountryCode(r?._sheetName || r?.AdditionalAttribute2 || r?.Market || "").toLowerCase(),
+  }))
+);
+
+// Helpful: show current filters when testing
+console.log("[DSOH] filters snapshot:", {
+  countryFilter,
+  distributorFilter,
+  stateFilter,
+  wineTypeFilter,
+  wineTypeCode,
+  brandFilter,
+});
+
 
 
 
@@ -1496,6 +1600,7 @@ export default function Dashboard() {
               totalStockFloat: stock.stock
             });
           }
+          
           
           // Add/update with in-transit items
           for (const [key, transit] of inTransitByDistributorWine.entries()) {
@@ -2809,10 +2914,20 @@ export default function Dashboard() {
           // Filter warehouse stock by country and wine type
           // Note: warehouse stock data uses OnHand, Allocated, Pending, Available (capitalized)
           // and Market/AdditionalAttribute2 for country
+          const whDbg = {
+            total: warehouseStockData.length,
+            dropped_noStock: 0,
+            dropped_notFinished: 0,
+            dropped_country: 0,
+            dropped_wine: 0,
+            kept: 0,
+          };
+          
           const filteredWarehouseStock = warehouseStockData.filter(item => {
             // Skip items without stock data
             const hasStockData = getWarehouseAvailable12pk(item) > 0;
             if (!hasStockData) {
+              whDbg.dropped_noStock++;
               return false;
             }
 
@@ -2916,6 +3031,8 @@ export default function Dashboard() {
           });
 
           
+
+          
           
           
           // Group by distributor (AdditionalAttribute2) and wine code
@@ -2945,6 +3062,8 @@ export default function Dashboard() {
               distributorName = 'NZL';
             } else if (distributorName === 'AU-B' || distributorName === 'AUB' || distributorName.includes('AU-B')) {
               distributorName = 'AU-B';
+            } else if (distributorName === 'AU-C' || distributorName === 'AUC' || distributorName.includes('AU-C')) {
+              distributorName = 'AU-C';            
             } else {
               // Fallback: use normalized country code
               distributorName = normalizeCountryCode(rawDistributorName).toUpperCase();
