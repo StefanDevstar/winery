@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { normalizeCountryCode, normalizeWineTypeToCode } from "../lib/utils";
 
@@ -10,107 +11,6 @@ import DistributorMap from "../components/dashboard/DistributorMap";
 import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
-
-// ───────── AU-B state helpers ─────────
-function inferAUBStateFromDistributorHeader(v) {
-  const s = String(v || "").toUpperCase();
-
-  if (/\bSYD\b/.test(s) || s.includes("SYDNEY")) return "NSW";
-  if (/\bMEL\b/.test(s) || s.includes("MELBOURNE")) return "VIC";
-  if (/\bBNE\b/.test(s) || s.includes("BRIS") || s.includes("BRISBANE")) return "QLD";
-
-  return "";
-}
-
-function buildAubDsohColMap(aubRows) {
-  // Find the header-ish row that contains "ITEM"
-  const headerRow =
-    aubRows.find(r => String(r?.Code || "").trim().toUpperCase() === "ITEM") ||
-    aubRows.find(r => String(r?.VarietyCode || "").trim().toUpperCase() === "ITEM") ||
-    aubRows.find(r => String(r?.ProductName || "").trim().toUpperCase() === "ITEM");
-
-  const raw = headerRow?._originalData ?? headerRow ?? {};
-  const map = [];
-
-  for (const [colKey, headerText] of Object.entries(raw)) {
-    const txt = String(headerText || "").trim();
-
-    // Only keep BW warehouse columns
-    if (!/BW\d{2}-/i.test(txt) && !/\bSYD\b|\bMEL\b|\bBNE\b/i.test(txt)) continue;
-
-    const st = inferAUBStateFromDistributorHeader(txt); // your helper
-    if (st) map.push({ colKey, state: st, headerText: txt });
-  }
-
-  return map; // [{colKey:"Column_3", state:"NSW", headerText:"BW01-SYD"}, ...]
-}
-
-const AUB_STATES = ["NSW", "VIC", "QLD"];
-
-function normalizeAubState(v) {
-  const s = String(v || "").trim().toUpperCase();
-  if (!s) return "";
-  if (s === "NEW SOUTH WALES") return "NSW";
-  if (s === "VICTORIA") return "VIC";
-  if (s === "QUEENSLAND") return "QLD";
-  if (AUB_STATES.includes(s)) return s;
-  return s; // fallback (keeps unknowns visible in debug)
-}
-
-function getAubStateFromSalesRow(row) {
-  const raw =
-    row?.State ??
-    row?.state ??
-    row?.["STATE"] ??
-    row?.["State"] ??
-    row?.["AU State"] ??
-    row?.["AU_STATE"];
-  return normalizeAubState(raw);
-}
-
-function parseNumberLooseLocal(v) {
-  if (v == null) return 0;
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  const s = String(v).replace(/,/g, "").trim();
-  if (!s) return 0;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : 0;
-}
-
-// AU-B DSOH sheet is "wide": BW01-SYD / BW03-MEL / BW04-BNE... are columns.
-// We convert those into an OnHand number based on selected AU state filter.
-function getAubOnHandFromWideRow(row, aubStateFilter, colMap) {
-  const want = aubStateFilter ? normalizeAubState(aubStateFilter) : "";
-  const raw = row?._originalData ?? row ?? {};
-
-  // Preferred path: Column_* keys mapped from ITEM row
-  if (Array.isArray(colMap) && colMap.length) {
-    let sum = 0;
-    for (const m of colMap) {
-      if (want && m.state !== want) continue;
-      sum += parseNumberLooseLocal(raw[m.colKey]);
-    }
-    return sum;
-  }
-
-  // Fallback: if BW headers really are keys on the row
-  let sum = 0;
-  for (const [kRaw, v] of Object.entries(raw)) {
-    const k = String(kRaw || "").trim().toUpperCase();
-    if (!/^BW\d{2}-/.test(k)) continue;
-
-    let st = "";
-    if (k.includes("-SYD")) st = "NSW";
-    else if (k.includes("-MEL")) st = "VIC";
-    else if (k.includes("-BNE")) st = "QLD";
-    else continue;
-
-    if (want && st !== want) continue;
-    sum += parseNumberLooseLocal(v);
-  }
-  return sum;
-}
-
 
 function looksLikeAuC(v) {
   const s = String(v || "").toLowerCase();
@@ -128,11 +28,11 @@ function safeParseArray(raw) {
 
 function inferDSOHMarketRaw(row, fallbackSheetName = "") {
   return (
-    row?.AdditionalAttribute2 ||
+    row?.AdditionalAttribute3 ||
     row?.Market ||
     row?.MarketCode ||          // sometimes sheet puts AU-C here
     row?._sheetName ||
-    fallbackSheetName ||
+    fallbackSheetName |
     ""
   ).toString().trim();
 }
@@ -485,6 +385,11 @@ export default function Dashboard() {
   }, []); // Only load once on mount
 
   useEffect(() => {
+    console.log("[Dashboard] country changed ->", filters.country);
+  }, [filters.country]);
+  
+
+  useEffect(() => {
     console.log("normalizeCountryCode tests:", {
       "au-b": normalizeCountryCode("au-b"),
       "au_b": normalizeCountryCode("au_b"),
@@ -498,7 +403,12 @@ export default function Dashboard() {
     
     const loadAndProcessData = () => {
       setIsProcessing(true);
-      
+      setStockFloatData([]);
+    setForecastAccuracyData([]);
+    setWarehouseStockProjection([]);
+    setAlerts([]);
+    setDistributors([]);
+
       // Use requestAnimationFrame to prevent blocking the UI
       requestAnimationFrame(() => {
         try {
@@ -567,8 +477,9 @@ export default function Dashboard() {
                       try {
                         const parsed = JSON.parse(sheetData);
                         if (Array.isArray(parsed)) {
-                          salesData.push(...parsed);
+                          salesData.push(...parsed.map(r => ({ ...r, _sheetName: r?._sheetName ?? sheetName })));
                         }
+                        
                       } catch (e) {
                         // Error parsing sales sheet
                       }
@@ -581,42 +492,69 @@ export default function Dashboard() {
             }
           }
           
-          (() => {
-            const AU = "au-b";
-            const auRows = (salesData || []).filter(r =>
-              String(r?.AdditionalAttribute2 || "").toLowerCase() === AU
-            );
-          
-            const stateFromLocation = (loc) => {
-              const s = String(loc || "");
-              return s.includes("_") ? s.split("_")[0] : null;
-            };
-          
-            console.log(`[AU-B] rows: ${auRows.length}`);
-          
-            // Show raw inputs + what we can derive
-            console.table(
-              auRows.slice(0, 80).map((r, i) => ({
-                i,
-                State_field: r.State ?? null,
-                AA4_state: r.AdditionalAttribute4 ?? null,
-                Location: r.Location ?? null,
-                state_from_Location: stateFromLocation(r.Location),
-                customer_from_Location: String(r.Location || "").split("_").slice(1).join("_") || null,
-                month: r._month ?? null,
-                year: r._year ?? null,
-                qty: r.Available ?? null,
-                wine: r.ProductName ?? null,
-              }))
-            );
-          
-            // Quick “unique states” list (field vs derived)
-            const uniq = (arr) => [...new Set(arr.filter(Boolean))].sort();
-            console.log("[AU-B] unique State_field:", uniq(auRows.map(r => r.State)));
-            console.log("[AU-B] unique state_from_Location:", uniq(auRows.map(r => stateFromLocation(r.Location))));
-          })();
 
-          
+          // ✅ DEBUG: SALES load + AU-C presence
+          console.groupCollapsed("[SALES] load debug");
+          console.log("[SALES] total rows:", salesData.length);
+          console.log("[SALES] meta sheetNames:", salesMetadataRaw ? JSON.parse(salesMetadataRaw)?.sheetNames : null);
+
+          const bySheet = salesData.reduce((acc, r) => {
+            const sn = String(r?._sheetName || "").trim() || "(none)";
+            acc[sn] = (acc[sn] || 0) + 1;
+            return acc;
+          }, {});
+          console.log("[SALES] rows by _sheetName:", bySheet);
+
+          const byMarket = salesData.reduce((acc, r) => {
+            const raw =
+              (r?.AdditionalAttribute2 ||
+              r?.Market ||
+              r?.Country ||
+              r?.MarketCode ||
+              r?._sheetName ||
+              "").toString().trim();
+
+            const norm = normalizeCountryCode(raw).toLowerCase();
+            acc[norm] = (acc[norm] || 0) + 1;
+            return acc;
+          }, {});
+          console.log("[SALES] rows by inferred normalized market:", byMarket);
+
+          const aucRows = salesData.filter(r => {
+            const raw =
+              (r?.AdditionalAttribute2 ||
+              r?.Market ||
+              r?.Country ||
+              r?.MarketCode ||
+              r?._sheetName ||
+              "").toString().trim();
+
+            return normalizeCountryCode(raw).toLowerCase() === "au-c";
+          });
+
+          console.log("[SALES] AU-C rows:", aucRows.length);
+          console.log("[SALES] AU-C keys sample:", aucRows[0] ? Object.keys(aucRows[0]) : null);
+
+          console.table(
+            aucRows.slice(0, 25).map((r, i) => ({
+              i,
+              rawMarket: (r?.AdditionalAttribute2 || r?.Market || r?.Country || r?.MarketCode || r?._sheetName || "").toString(),
+              normMarket: normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || r?.Country || r?.MarketCode || r?._sheetName || "").toLowerCase(),
+              _sheetName: r?._sheetName,
+              Location: r?.Location,
+              Distributor: r?.Distributor,
+              ProductName: r?.ProductName,
+              Product: r?.Product,
+              BrandCode: r?.BrandCode,
+              AA2: r?.AdditionalAttribute2,
+              Market: r?.Market,
+              MarketCode: r?.MarketCode,
+              AA3: r?.AdditionalAttribute3,
+            }))
+          );
+
+          console.groupEnd();
+
           const nzRows = (salesData || []).filter(r =>
             normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || r?.Country || "").toLowerCase() === "nzl"
           );
@@ -663,11 +601,7 @@ export default function Dashboard() {
           // Pre-compute filter values for efficiency
           const countryFilter = filters.country === "all" ? null : filters.country.toLowerCase();
           const distributorFilter = filters.distributor === "all" ? null : filters.distributor.replace(/_/g, " ").toLowerCase();
-          const stateFilterRaw = filters.state === "all" ? null : filters.state.trim();
-
-          const usaStateFilter = countryFilter === "usa" ? stateFilterRaw : null;
-          const aubStateFilter = countryFilter === "au-b" ? stateFilterRaw : null;
-
+          const stateFilter = filters.state === "all" ? null : filters.state.trim();
           const wineTypeFilter = filters.wineType === "all" ? null : filters.wineType.replace(/_/g, " ").toLowerCase();
           const wineTypeCode = filters.wineType === "all" ? null : filters.wineType.split("_")[0];
           const yearFilter = filters.year === "all" ? null : filters.year.toString();
@@ -681,20 +615,39 @@ export default function Dashboard() {
           distributorStockOnHand = divideBy12IfIreland(distributorStockOnHand, countryFilter);
           salesData = divideBy12IfIreland(salesData, countryFilter);
 
+          // ───────── DEBUG: AU-C sales brand filter sanity ─────────
+          if (countryFilter === "au-c") {
+            const aucRows = (salesData || []).filter(r =>
+              normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || r?._sheetName || "").toLowerCase() === "au-c"
+            );
+
+            console.log("[AU-C SALES] total rows:", aucRows.length);
+            console.log("[AU-C SALES] active brandFilter:", brandFilter);
+
+            console.table(
+              aucRows.slice(0, 20).map((r, i) => ({
+                i,
+                ProductName: r?.ProductName,
+                Brand: r?.Brand,
+                BrandCode: r?.BrandCode,
+                matchesBrand: brandFilter ? matchesBrand(r, brandFilter) : "(no brand filter)",
+                AA3: r?.AdditionalAttribute3,
+                month: r?._month,
+                year: r?._year,
+                Available: r?.Available
+              }))
+            );
+          }
+
+
 
 
           // ───────── Pre-fix distributor stock rows BEFORE filtering ─────────
-          const aubRows2 = (distributorStockOnHand || []).filter(
-            r => normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || r?._sheetName || "").toLowerCase() === "au-b"
-          );
-          
-          const aubColMap = buildAubDsohColMap(aubRows2);
-          
           const distributorStockOnHandFixed = (distributorStockOnHand || [])
           .map((row) => {
             const c = normalizeCountryCode(row?.AdditionalAttribute2 || row?.Market || row?._sheetName || "").toLowerCase();
 
-            
+
             const pn = String(row?.ProductName || "").trim();
             const prod = String(row?.Product || "").trim();
 
@@ -726,12 +679,7 @@ export default function Dashboard() {
             // ✅ AU-B: Product holds the wine name, ProductName holds the code
             // Replace ProductName with Product (only if Product looks real)
             if (c === "au-b") {
-              const next = { ...row };
-            
-              // --- ProductName fix ---
-              const prod = String(next.Product ?? "").trim();
-              const prodLower = prod.toLowerCase();
-            
+              // If Product is a real wine description, prefer it
               const productLooksReal =
                 prod &&
                 prodLower !== "description" &&
@@ -744,18 +692,11 @@ export default function Dashboard() {
                   prodLower.includes("riesling") ||
                   prodLower.includes("gruner") ||
                   prodLower.includes("ros"));
-            
+
               if (productLooksReal) {
-                next.ProductName = prod; // ✅ AU-B: display name
+                return { ...row, ProductName: prod }; // ✅ key fix for AU-B
               }
-            
-              // --- OnHand from wide AU-B columns ---
-              next.OnHand = getAubOnHandFromWideRow(next, aubStateFilter, aubColMap);
-            
-              return next;
-            }            
-   
-            
+            }
 
             return row;
           })
@@ -765,110 +706,44 @@ export default function Dashboard() {
           // ───────── Filter Distributor Stock On Hand ─────────
           // Filter distributor stock on hand data (actual stock at distributors)
           const filteredDistributorStockOnHand = [];
-          const aubRows = (distributorStockOnHandFixed || []).filter(
-            (r) => normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || r?._sheetName || "").toLowerCase() === "au-b"
-          );
-          
-          const stateFilter =
-            usaStateFilter && usaStateFilter !== "all"
-              ? String(usaStateFilter).toUpperCase().trim()
-              : "";
-            
-              const looksLikeBWHeaderValue = (v) =>
-                /BW\d+/i.test(String(v || "")) ||
-                /\bSYD\b|\bMEL\b|\bBNE\b|SYDNEY|MELBOURNE|BRISBANE/i.test(String(v || ""));
-              
-              console.log("[AU-B DSOH] rows:", aubRows.length);
-              
-              const itemRow =
-                aubRows.find((r) => String(r?.Code || "").trim().toUpperCase() === "ITEM") ||
-                aubRows.find((r) => String(r?.VarietyCode || "").trim().toUpperCase() === "ITEM");
-              
-              if (!itemRow) {
-                console.warn("[AU-B DSOH] Could not find ITEM row. Show first 15 Code values:");
-                console.table(aubRows.slice(0, 15).map((r, i) => ({ i, Code: r?.Code, VarietyCode: r?.VarietyCode })));
-              } else {
-                const raw = itemRow._originalData || {};
-                console.log("[AU-B DSOH] ITEM row found. _originalData keys:", Object.keys(raw));
-              
-                // Map: ColumnKey -> HeaderText (BW01-SYD etc)
-                const colMap = Object.entries(raw)
-                  .filter(([k, v]) => looksLikeBWHeaderValue(v))
-                  .map(([k, v]) => ({
-                    colKey: k,            // e.g. Column_3
-                    headerText: String(v),// e.g. BW01-SYD
-                    state: inferAUBStateFromDistributorHeader(v) || "(no state)",
-                  }));
-              
-                console.table(colMap);
-              
-                // show sample values for first real SKU row using those column keys
-                const skuRow = aubRows.find((r) => /^JT|^OTQ|^TBH/i.test(String(r?.Code || "").trim()));
-                if (!skuRow) {
-                  console.warn("[AU-B DSOH] Could not find SKU row (JT/OTQ/TBH). Showing first 15 Code values again:");
-                  console.table(aubRows.slice(0, 15).map((r, i) => ({ i, Code: r?.Code })));
-                } else {
-                  const rawSku = skuRow._originalData || {};
-                  console.log("[AU-B DSOH] sample SKU:", skuRow.Code);
-              
-                  console.table(
-                    colMap.map((m) => ({
-                      colKey: m.colKey,
-                      headerText: m.headerText,
-                      state: m.state,
-                      value: rawSku[m.colKey],
-                    }))
-                  );
-                }
-              }
-          
           for (let i = 0; i < distributorStockOnHandFixed.length; i++) {
             const r = distributorStockOnHandFixed[i];
-          
-            // country filter
+            
+            // Apply filters
             if (countryFilter) {
               const rawCountryCode = (r.AdditionalAttribute2 || r.Market || r._sheetName || r.MarketCode || "");
+
               const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
               const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
               if (countryCode !== normalizedFilter) continue;
             }
-          
-            // USA state filter (exact match)
-            if (countryFilter === "usa" && stateFilter) {
-              const location = String(r.Location || "").trim();
-              if (location !== stateFilter) continue;
-            }
-
             
-          
-            // Distributor filter (skip AU-B if you're already filtering by state)
-            if (countryFilter !== "usa" && distributorFilter) {
-              if (countryFilter === "au-b" && stateFilter) {
-                // optional: ignore distributorFilter when state is selected (prevents accidental empty results)
-              } else if (countryFilter === "au-b") {
-                // simple contains match for AU-B
-                const loc = String(r.Location || r.Distributor || "").toLowerCase();
-                const want = String(distributorFilter).toLowerCase();
-                if (!loc.includes(want) && !want.includes(loc)) continue;
-              } else {
-                // your existing non-AU-B cleanup logic
-                let location = (r.Location || r.Distributor || "").toLowerCase().replace(/_/g, " ");
-                let locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s*-\s*/i, "").trim();
-                if (!locationWithoutPrefix || locationWithoutPrefix === location) {
-                  locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s+/i, "").trim();
-                }
-                if (!locationWithoutPrefix || locationWithoutPrefix === location) {
-                  locationWithoutPrefix = location;
-                }
-                const normalizedFilter = distributorFilter.toLowerCase();
-                if (
-                  !locationWithoutPrefix.includes(normalizedFilter) &&
-                  !normalizedFilter.includes(locationWithoutPrefix)
-                ) {
-                  continue;
-                }
+            // For USA, filter by state (Location field contains state name)
+            if (countryFilter === 'usa' && stateFilter) {
+              const location = (r.Location || "").trim();
+              if (location !== stateFilter) {
+                continue;
               }
             }
+            
+            // For other countries, filter by distributor
+            if (countryFilter !== 'usa' && distributorFilter) {
+              let location = (r.Location || r.Distributor || "").toLowerCase().replace(/_/g, " ");
+              let locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s*-\s*/i, "").trim();
+              if (!locationWithoutPrefix || locationWithoutPrefix === location) {
+                locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s+/i, "").trim();
+              }
+              if (!locationWithoutPrefix || locationWithoutPrefix === location) {
+                locationWithoutPrefix = location;
+              }
+              const normalizedFilter = distributorFilter.toLowerCase();
+              if (!locationWithoutPrefix.includes(normalizedFilter) &&
+                  !normalizedFilter.includes(locationWithoutPrefix)) {
+                continue;
+              }
+            }
+
+          
 
                       
             if (brandFilter) {
@@ -1018,42 +893,16 @@ export default function Dashboard() {
             );
           }
 
-          console.log("NZ sales sample keys:", salesData[0] ? Object.keys(salesData[0]) : []);
-
-          // ───────── DEBUG: DSOH filter results ─────────
-const filteredMarkets = Array.from(new Set(
-  filteredDistributorStockOnHand.map(r =>
-    normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || r?._sheetName || "").toLowerCase()
-  )
-)).sort();
-
-console.log("[DSOH] POST-FILTER rows:", filteredDistributorStockOnHand.length);
-console.log("[DSOH] POST-FILTER normalized markets:", filteredMarkets);
-
-const filteredAuC = filteredDistributorStockOnHand.filter(r => {
-  const raw = r?._sheetName || r?.AdditionalAttribute2 || r?.Market || r?.Location || "";
-  const cc = normalizeCountryCode(raw).toLowerCase();
-  return cc === "au-c" || looksLikeAuC(raw);
-});
-
-console.log("[DSOH] POST-FILTER AU-C rows:", filteredAuC.length);
-console.table(
-  filteredAuC.slice(0, 30).map((r, i) => ({
-    i,
-    sheet: r?._sheetName,
-    aa2: r?.AdditionalAttribute2,
-    market: r?.Market,
-    location: r?.Location,
-    productName: r?.ProductName,
-    onHand: r?.OnHand ?? r?.StockOnHand ?? r?.Available ?? 0,
-    aa3: r?.AdditionalAttribute3,
-    normMarket: normalizeCountryCode(r?._sheetName || r?.AdditionalAttribute2 || r?.Market || "").toLowerCase(),
-  }))
-);
-
-
-
-
+          console.log("[SALES] recompute snapshot:", {
+            countryFilter,
+            distributorFilter,
+            stateFilter,
+            yearFilter,
+            brandFilter,
+            channelFilter,
+            salesDataLen: salesData?.length,
+          });
+          
 
           // ───────── Filter Sales Data (Depletion Summary) ─────────
           // Filter sales/depletion data for sales predictions
@@ -1063,7 +912,15 @@ console.table(
             
             // Early exit for country filter (most selective)
             if (countryFilter) {
-              const rawCountryCode = (r.AdditionalAttribute2 || r.Market || r.Country || "").toString().trim();
+              const rawCountryCode = (
+                r.AdditionalAttribute2 ||
+                r.Market ||
+                r.Country ||
+                r.MarketCode ||
+                r._sheetName ||
+                ""
+              ).toString().trim();
+              
               const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
               const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
       
@@ -1118,20 +975,12 @@ console.table(
             }
             
             // For USA, filter by state (Location field contains state name)
-            if (countryFilter === 'usa' && usaStateFilter) {
+            if (countryFilter === 'usa' && stateFilter) {
               const location = (r.Location || "").trim();
-              if (location !== usaStateFilter) {
+              if (location !== stateFilter) {
                 continue;
               }
             }
-            // For AU-B, filter by AU state column (NSW/VIC/QLD)
-            if (countryFilter === "au-b" && aubStateFilter) {
-              const st = getAubStateFromSalesRow(r);
-              if (st !== normalizeAubState(aubStateFilter)) continue;
-            }
-
-            
-
             
             // For other countries, filter by distributor
             if (countryFilter !== 'usa' && distributorFilter) {
@@ -1296,6 +1145,28 @@ console.table(
             
             filteredStock.push(r);
           }
+
+          console.groupCollapsed("[SALES] filteredStock summary");
+          console.log("countryFilter:", countryFilter);
+          console.log("filteredStock len:", filteredStock.length);
+
+          const uniq = Array.from(new Set(filteredStock.map(r =>
+            normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || r?._sheetName || "").toLowerCase()
+          ))).sort();
+
+          console.log("filteredStock uniq markets:", uniq);
+          console.table(filteredStock.slice(0, 12).map(r => ({
+            ProductName: r?.ProductName,
+            BrandCode: r?.BrandCode,
+            Location: r?.Location,
+            _month: r?._month,
+            _year: r?._year,
+            Available: r?.Available,
+          })));
+          console.groupEnd();
+
+            
+
           console.log(
             "POST-FILTER sales markets:",
             [...new Set(filteredStock.map(x =>
@@ -1957,16 +1828,13 @@ console.table(
             if (countryCode !== normalizedFilter) continue;
           }
           
-          if (countryFilter === "usa" && usaStateFilter) {
+          // Filter by state for USA
+          if (countryFilter === 'usa' && stateFilter) {
             const location = (r.Location || "").trim();
-            if (location !== usaStateFilter) continue;
+            if (location !== stateFilter) {
+              continue;
+            }
           }
-          
-          if (countryFilter === "au-b" && aubStateFilter) {
-            const st = getAubStateFromSalesRow(r);
-            if (st !== normalizeAubState(aubStateFilter)) continue;
-          }
-          
           
           // Filter by distributor for non-USA (but not wine type)
           if (countryFilter !== 'usa' && distributorFilter) {

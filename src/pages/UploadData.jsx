@@ -215,9 +215,6 @@ export default function UploadDataPage() {
         if (!sheetsData || Object.keys(sheetsData).length === 0) {
           throw new Error('Excel file contains no sheets or data.');
         }
-        console.log("[DSOH] sheet names from Excel:", Object.keys(sheetsData || {}));
-        console.log("[DSOH] AU-C raw preview:", (sheetsData?.["AU-C"] || []).length, (sheetsData?.["AU-C"] || [])[0]);
-
         
         sheetCount = Object.keys(sheetsData).length;
         
@@ -446,7 +443,6 @@ export default function UploadDataPage() {
       setGlobalError(`Failed to process ${type} data. Please check the file format and try again.`);
     }
   };
-  
 
 
   const handleRefresh = async () => {
