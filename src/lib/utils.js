@@ -1142,152 +1142,71 @@ function parseIRESheet(records) {
   return filterEmptyRecords(normalized);
 }
 
-function parseAUCSheet(records, sheetName = "AU-C") {
-  const filteredRecords = records.filter(r =>
-    r && typeof r === "object" &&
-    Object.values(r).some(v => v != null && String(v).trim() !== "")
-  );
+function parseAUCSheet(records) {
+  // Filter out completely empty records
+  const filteredRecords = records.filter(r => {
+    if (!r || typeof r !== "object") return false;
+    return Object.values(r).some(v => v !== null && v !== undefined && String(v).trim() !== "");
+  });
 
-  if (filteredRecords.length === 0) return [];
+  const normalized = [];
 
-  const first = filteredRecords[0];
-  const keys = Object.keys(first);
-
-  const bannerKey = keys.find(k => String(k).trim().toLowerCase() === "banner") || "Banner";
-  const itemKey = keys.find(k => String(k).trim().toLowerCase() === "item") || "Item";
-
-  // month columns like: "Sales Qty (Singles) Mar-25"
-  const monthCols = keys.filter(k =>
-    /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)-\d{2}\b/i.test(String(k))
-  );
-
-   // ✅ DEBUG AU-C header detection
-   console.groupCollapsed("[parseAUCSheet] debug");
-   console.log("sheetName:", JSON.stringify(sheetName));
-   console.log("filteredRecords:", filteredRecords.length);
-   console.log("bannerKey:", bannerKey, "itemKey:", itemKey);
-   console.log("all keys (first row):", keys);
-   console.log("monthCols detected:", monthCols);
-   if (monthCols.length === 0) {
-     console.warn("[parseAUCSheet] monthCols is EMPTY — regex mismatch. Sample keys:", keys.slice(0, 40));
-   } else {
-     // show first row month values
-     const sampleMonthVals = monthCols.slice(0, 12).map(k => ({ key: k, value: first[k] }));
-     console.table(sampleMonthVals);
-   }
-   console.groupEnd();
-
-   const parseMonthToMeta = (k) => {
-    const m = String(k).match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)-(\d{2})\b/i);
-    if (!m) return null;
-  
-    const monRaw = m[1];
-    const mon = monRaw.toLowerCase() === "sept" ? "Sep" : (monRaw[0].toUpperCase() + monRaw.slice(1,3).toLowerCase()); // "Sep"
-    const yy = Number(m[2]);
-    const year = 2000 + yy;
-  
-    const map = {Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12};
-    const mm = map[mon];
-    if (!mm) return null;
-  
-    const iso = `${year}-${String(mm).padStart(2, "0")}-01`;
-    return { iso, monthName: mon, year: String(year) };
-  };
-  
-
-  const parseNum = (v) => {
-    if (v == null) return 0;
-    const s = String(v).replace(/,/g, "").replace(/[^\d.-]/g, "").trim();
-    const n = s ? Number(s) : 0;
-    return Number.isFinite(n) ? n : 0;
+  // AU-C months: Mar-25 -> Feb-26
+  const monthColumnMap = {
+    "Mar-25": { month: "Mar", year: "2025" },
+    "Apr-25": { month: "Apr", year: "2025" },
+    "May-25": { month: "May", year: "2025" },
+    "Jun-25": { month: "Jun", year: "2025" },
+    "Jul-25": { month: "Jul", year: "2025" },
+    "Aug-25": { month: "Aug", year: "2025" },
+    "Sep-25": { month: "Sep", year: "2025" },
+    "Sept-25": { month: "Sep", year: "2025" }, // handle Sept spelling
+    "Oct-25": { month: "Oct", year: "2025" },
+    "Nov-25": { month: "Nov", year: "2025" },
+    "Dec-25": { month: "Dec", year: "2025" },
+    "Jan-26": { month: "Jan", year: "2026" },
+    "Feb-26": { month: "Feb", year: "2026" },
   };
 
-  const out = [];
+  filteredRecords.forEach(r => {
+    // Try to find Item column robustly (some exports might use "ITEM" or "Item ")
+    const item =
+      String(r["Item"] ?? r["ITEM"] ?? r["item"] ?? "").trim();
 
-  for (const r of filteredRecords) {
-    const banner = String(r[bannerKey] ?? "").trim();
+    // Skip obvious header rows / blanks
+    if (!item || item.toUpperCase() === "ITEM") return;
 
-    const itemRaw = String(r?.[itemKey] ?? "").trim();      // often numeric id like 5873325
-    const col2Raw = String(r?.Column_2 ?? "").trim();       // often the description
-    const itemId = itemRaw.replace(/^Item\s+/i, "").trim();
+    // If AU-C has banner too, use it, otherwise default
+    const banner =
+      String(r["Banner"] ?? r["BANNER"] ?? r["banner"] ?? "").trim();
 
-    // Pick best description:
-    // - if Item is numeric and Column_2 has letters, use Column_2 as the product description
-    const looksNumeric = /^\d+$/.test(itemId);
-    const hasLetters = /[a-zA-Z]/.test(col2Raw);
+    // Process month columns
+    Object.keys(monthColumnMap).forEach(colKey => {
+      const monthInfo = monthColumnMap[colKey];
+      const value = r[colKey];
 
-    const productDesc = (looksNumeric && hasLetters)
-      ? col2Raw
-      : itemId;
+      // Parse numeric (strip commas etc.)
+      const qty = value ? parseFloat(String(value).replace(/,/g, "")) : 0;
 
-    if (!productDesc) continue;
+      if (qty > 0) {
+        normalized.push({
+          AdditionalAttribute2: "au-c",
+          AdditionalAttribute3: normalizeWineTypeToCode(item), // simple: infer wine type from item text
+          ProductName: item,
+          Location: banner ? banner.toUpperCase() : "AU-C",
+          Available: qty,
+          _month: monthInfo.month,
+          _year: monthInfo.year,
+          _sheetName: "AU-C",
+          _originalData: r,
+        });
+      }
+    });
+  });
 
-    // Parse SKU-ish parts from description (NOT the numeric id)
-    const skuParts = parseProductSKU(productDesc);
-
-    // ✅ Brand inference from description text (works even when parseProductSKU can't)
-    const brandCanon = normalizeBrandToCode(productDesc); // "JT" | "TBH" | "OTQ" | ""
-    const brandForFilter =
-      brandCanon === "JT" ? "jtw" :
-      brandCanon ? brandCanon.toLowerCase() :
-      "";
-    const brandName =
-      brandCanon ? (BRAND_NAME_MAP?.[brandCanon] || brandCanon) : "";
-
-    // Wine type code from description
-    let wineTypeCode = normalizeWineTypeToCode(productDesc);
-    if (!wineTypeCode || wineTypeCode.length > 10) {
-      wineTypeCode = normalizeWineTypeToCode(
-        skuParts.varietyCode || skuParts.fullSKU || productDesc
-      );
-    }
-
-    for (const col of monthCols) {
-      const meta = parseMonthToMeta(col);
-      if (!meta) continue;
-      const { iso, monthName, year } = meta;
-
-
-      const qty = parseNum(r[col]);
-      if (!(qty > 0)) continue;
-
-      out.push({
-        AdditionalAttribute2: "au-c",
-        Market: "au-c",
-        _sheetName: sheetName,
-      
-        Location: banner ? banner.toUpperCase() : "",
-        _banner: banner,
-      
-        // ✅ Use description for naming, keep id as code
-        ProductName: productDesc,
-        Product: productDesc,
-      
-        // Code should be the numeric item id if present, otherwise fallback to parsed SKU/desc
-        Code: looksNumeric ? itemId : (skuParts.fullSKU || productDesc),
-        _itemId: looksNumeric ? itemId : "",
-      
-        Brand: skuParts.brand || brandName,
-        BrandCode: skuParts.brandCode || brandForFilter,
-        Variety: skuParts.variety,
-        VarietyCode: skuParts.varietyCode || wineTypeCode,
-        AdditionalAttribute3: wineTypeCode,
-      
-        Date: iso,
-        _year: Number(year),
-        _month: monthName,
-      
-        Available: qty,
-        Qty: qty,
-      });
-      
-    }
-  }
-  console.log("[parseAUCSheet] output rows:", out.length);
-  console.table(out.slice(0, 10));
-
-  return filterEmptyRecords(out);
+  return filterEmptyRecords(normalized);
 }
+
 
 
 /**
@@ -1386,6 +1305,7 @@ export function normalizeSalesData(records, sheetName = '') {
     })
     .filter(record => !isEmptyRecord(record)); // Filter empty records
 }
+
 
 /**
  * Normalizes exports data from Excel file.
