@@ -970,40 +970,6 @@ function parseAUBSheet(records) {
 }
 
 /**
- * Parses AU-C sheet - Sales by Banner and Item
- * Structure: Banner, Item, Sales Qty (Singles)
- */
-function parseAUCSheet(records) {
-  // First filter out completely empty records
-  const filteredRecords = records.filter(r => {
-    if (!r || typeof r !== 'object') return false;
-    return Object.values(r).some(v => v !== null && v !== undefined && String(v).trim() !== '');
-  });
-  
-  return filteredRecords
-    .filter(r => r.Banner && r.Item && r['Sales Qty (Singles)'])
-    .map(r => {
-      const banner = String(r.Banner || '').trim();
-      // Get the third column value (index 2, 0-based)
-      const columnKeys = Object.keys(r);
-      const thirdColumnKey = columnKeys.length > 2 ? columnKeys[2] : null;
-      const thirdColumnValue = thirdColumnKey ? String(r[thirdColumnKey] || '').trim() : '';
-      const salesQty = parseFloat(String(r['Sales Qty (Singles)'] || '0').replace(/,/g, '')) || 0;
-      
-      return {
-        AdditionalAttribute2: 'au-c', // Preserve AU-C as separate country code
-        AdditionalAttribute3: normalizeWineTypeToCode(thirdColumnValue), // Wine code (SAB, PIN, etc.)
-        ProductName: `Item ${thirdColumnValue}`, // Product name
-        Location: banner.toUpperCase(), // Location (Banner)
-        Available: salesQty, // Sales quantity (depletion)
-        _banner: banner,
-        _sheetName: 'AU-C'
-      };
-    })
-    .filter(record => !isEmptyRecord(record)); // Filter empty records
-}
-
-/**
  * Parses USA sheet - Monthly sales by State and Wine
  * Structure: Row 1 has month headers (Jan-25, Feb-25, etc.)
  * Row 2 has sub-headers, Row 3+ has data: Country, State, Wine Name, monthly values
@@ -1176,6 +1142,154 @@ function parseIRESheet(records) {
   return filterEmptyRecords(normalized);
 }
 
+function parseAUCSheet(records, sheetName = "AU-C") {
+  const filteredRecords = records.filter(r =>
+    r && typeof r === "object" &&
+    Object.values(r).some(v => v != null && String(v).trim() !== "")
+  );
+
+  if (filteredRecords.length === 0) return [];
+
+  const first = filteredRecords[0];
+  const keys = Object.keys(first);
+
+  const bannerKey = keys.find(k => String(k).trim().toLowerCase() === "banner") || "Banner";
+  const itemKey = keys.find(k => String(k).trim().toLowerCase() === "item") || "Item";
+
+  // month columns like: "Sales Qty (Singles) Mar-25"
+  const monthCols = keys.filter(k =>
+    /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)-\d{2}\b/i.test(String(k))
+  );
+
+   // ✅ DEBUG AU-C header detection
+   console.groupCollapsed("[parseAUCSheet] debug");
+   console.log("sheetName:", JSON.stringify(sheetName));
+   console.log("filteredRecords:", filteredRecords.length);
+   console.log("bannerKey:", bannerKey, "itemKey:", itemKey);
+   console.log("all keys (first row):", keys);
+   console.log("monthCols detected:", monthCols);
+   if (monthCols.length === 0) {
+     console.warn("[parseAUCSheet] monthCols is EMPTY — regex mismatch. Sample keys:", keys.slice(0, 40));
+   } else {
+     // show first row month values
+     const sampleMonthVals = monthCols.slice(0, 12).map(k => ({ key: k, value: first[k] }));
+     console.table(sampleMonthVals);
+   }
+   console.groupEnd();
+
+   const parseMonthToMeta = (k) => {
+    const m = String(k).match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)-(\d{2})\b/i);
+    if (!m) return null;
+  
+    const monRaw = m[1];
+    const mon = monRaw.toLowerCase() === "sept" ? "Sep" : (monRaw[0].toUpperCase() + monRaw.slice(1,3).toLowerCase()); // "Sep"
+    const yy = Number(m[2]);
+    const year = 2000 + yy;
+  
+    const map = {Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12};
+    const mm = map[mon];
+    if (!mm) return null;
+  
+    const iso = `${year}-${String(mm).padStart(2, "0")}-01`;
+    return { iso, monthName: mon, year: String(year) };
+  };
+  
+
+  const parseNum = (v) => {
+    if (v == null) return 0;
+    const s = String(v).replace(/,/g, "").replace(/[^\d.-]/g, "").trim();
+    const n = s ? Number(s) : 0;
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const out = [];
+
+  for (const r of filteredRecords) {
+    const banner = String(r[bannerKey] ?? "").trim();
+
+    const itemRaw = String(r?.[itemKey] ?? "").trim();      // often numeric id like 5873325
+    const col2Raw = String(r?.Column_2 ?? "").trim();       // often the description
+    const itemId = itemRaw.replace(/^Item\s+/i, "").trim();
+
+    // Pick best description:
+    // - if Item is numeric and Column_2 has letters, use Column_2 as the product description
+    const looksNumeric = /^\d+$/.test(itemId);
+    const hasLetters = /[a-zA-Z]/.test(col2Raw);
+
+    const productDesc = (looksNumeric && hasLetters)
+      ? col2Raw
+      : itemId;
+
+    if (!productDesc) continue;
+
+    // Parse SKU-ish parts from description (NOT the numeric id)
+    const skuParts = parseProductSKU(productDesc);
+
+    // ✅ Brand inference from description text (works even when parseProductSKU can't)
+    const brandCanon = normalizeBrandToCode(productDesc); // "JT" | "TBH" | "OTQ" | ""
+    const brandForFilter =
+      brandCanon === "JT" ? "jtw" :
+      brandCanon ? brandCanon.toLowerCase() :
+      "";
+    const brandName =
+      brandCanon ? (BRAND_NAME_MAP?.[brandCanon] || brandCanon) : "";
+
+    // Wine type code from description
+    let wineTypeCode = normalizeWineTypeToCode(productDesc);
+    if (!wineTypeCode || wineTypeCode.length > 10) {
+      wineTypeCode = normalizeWineTypeToCode(
+        skuParts.varietyCode || skuParts.fullSKU || productDesc
+      );
+    }
+
+    for (const col of monthCols) {
+      const meta = parseMonthToMeta(col);
+      if (!meta) continue;
+      const { iso, monthName, year } = meta;
+
+
+      const qty = parseNum(r[col]);
+      if (!(qty > 0)) continue;
+
+      out.push({
+        AdditionalAttribute2: "au-c",
+        Market: "au-c",
+        _sheetName: sheetName,
+      
+        Location: banner ? banner.toUpperCase() : "",
+        _banner: banner,
+      
+        // ✅ Use description for naming, keep id as code
+        ProductName: productDesc,
+        Product: productDesc,
+      
+        // Code should be the numeric item id if present, otherwise fallback to parsed SKU/desc
+        Code: looksNumeric ? itemId : (skuParts.fullSKU || productDesc),
+        _itemId: looksNumeric ? itemId : "",
+      
+        Brand: skuParts.brand || brandName,
+        BrandCode: skuParts.brandCode || brandForFilter,
+        Variety: skuParts.variety,
+        VarietyCode: skuParts.varietyCode || wineTypeCode,
+        AdditionalAttribute3: wineTypeCode,
+      
+        Date: iso,
+        _year: Number(year),
+        _month: monthName,
+      
+        Available: qty,
+        Qty: qty,
+      });
+      
+    }
+  }
+  console.log("[parseAUCSheet] output rows:", out.length);
+  console.table(out.slice(0, 10));
+
+  return filterEmptyRecords(out);
+}
+
+
 /**
  * Normalizes distributor stock/depletion data from different sheet structures to a common format.
  * Uses sheet-specific parsers based on sheet name.
@@ -1204,6 +1318,14 @@ export function normalizeSalesData(records, sheetName = '') {
   if (!Array.isArray(records) || records.length === 0) return [];
   // Use sheet-specific parsers
   const upperSheetName = sheetName.toUpperCase();
+  if (upperSheetName.includes("AU-C") || upperSheetName === "AUC") {
+    console.groupCollapsed("[normalizeSalesData] AU-C entry");
+    console.log("sheetName:", JSON.stringify(sheetName));
+    console.log("records length:", Array.isArray(records) ? records.length : "not_array");
+    const first = Array.isArray(records) ? records.find(r => r && typeof r === "object") : null;
+    console.log("first keys:", first ? Object.keys(first) : null);
+    console.groupEnd();
+  }
   
   if (upperSheetName === 'NZL') {
     return parseNZLSheet(records);
