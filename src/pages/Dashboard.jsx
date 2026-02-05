@@ -239,20 +239,37 @@ const matchesBrand = (row, brandFilter /* string like "jtw"/"otq"/"tbh" */) => {
 };
 
 // If Ireland is selected, divide all numeric values in the rows by 12
-function divideBy12IfIreland(rows, countryFilter) {
-  const cf = (countryFilter || "").toLowerCase();
-  if (cf !== "ire" && cf !== "ireland") return rows;
+// If selected country is in "bottles" units, convert to 12pk cases by dividing numeric fields by 12
+function divideBy12IfIrelandOrAuC(rows, countryFilter) {
+  const cf = String(countryFilter || "").trim().toLowerCase();
+
+  // Countries/markets whose distributor stock sheet is in BOTTLES (not 12pk cases)
+  const BOTTLE_MARKETS = new Set(["ire", "ireland", "au-c", "auc", "au c"]);
+
+  if (!BOTTLE_MARKETS.has(cf)) return rows;
 
   // don't touch non-quantity fields that would break if divided
   const skip = new Set([
     "_year", "Year", "Vintage",
-    "_month", "Month", "month",     // ✅ ADD THESE
+    "_month", "Month", "month",
     "CaseSize", "BottleVolume",
-    "months", "term_years"
+    "months", "term_years",
+
+    // extra safety (common non-qty columns)
+    "Code", "SKU", "Product", "ProductName",
+    "Brand", "BrandCode", "Variety", "VarietyCode",
+    "Market", "MarketCode", "Location",
+    "_sheetName", "_originalSKU", "_originalData"
   ]);
 
   return (rows || []).map((r) => {
-    const out = { ...r };
+    if (!r || typeof r !== "object") return r;
+
+    // ✅ idempotent guard (prevents dividing twice)
+    if (r._convertedTo12pkCases) return r;
+
+    const out = { ...r, _convertedTo12pkCases: true };
+
     for (const k of Object.keys(out)) {
       if (skip.has(k)) continue;
 
@@ -266,13 +283,17 @@ function divideBy12IfIreland(rows, countryFilter) {
 
       // numeric string (e.g., "1,234")
       if (typeof v === "string") {
-        const n = Number(v.replace(/,/g, "").trim());
-        if (Number.isFinite(n) && v.trim() !== "") out[k] = n / 12;
+        const s = v.trim();
+        if (!s) continue;
+        const n = Number(s.replace(/,/g, ""));
+        if (Number.isFinite(n)) out[k] = n / 12;
       }
     }
+
     return out;
   });
 }
+
 
 
 /**
@@ -612,8 +633,8 @@ export default function Dashboard() {
               : null;
 
 
-          distributorStockOnHand = divideBy12IfIreland(distributorStockOnHand, countryFilter);
-          salesData = divideBy12IfIreland(salesData, countryFilter);
+          distributorStockOnHand = divideBy12IfIrelandOrAuC(distributorStockOnHand, countryFilter);
+          salesData = divideBy12IfIrelandOrAuC(salesData, countryFilter);
 
           // ───────── DEBUG: AU-C sales brand filter sanity ─────────
           if (countryFilter === "au-c") {
