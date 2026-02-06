@@ -8,6 +8,29 @@ import { format } from "date-fns";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { normalizeCountryCode } from "@/lib/utils";
 
+const AUS_STATES = ["NSW", "VIC", "QLD", "SA", "WA", "TAS", "ACT", "NT"];
+
+function normalizeAusState(loc) {
+  const s = String(loc || "").trim().toUpperCase();
+
+  // ✅ handle AU-B special codes seen in your logs
+  if (s === "HO") return "NSW";      // your data uses HO a lot; treat as NSW
+  if (s === "ZZNS") return "NSW";    // zzNS -> NSW
+
+  // existing logic...
+  for (const code of AUS_STATES) {
+    if (new RegExp(`\\b${code}\\b`).test(s)) return code;
+  }
+  if (s.includes("NEW SOUTH WALES")) return "NSW";
+  if (s.includes("VICTORIA")) return "VIC";
+  if (s.includes("QUEENSLAND")) return "QLD";
+  // ...
+  return "";
+}
+
+
+
+
 // ---------------- NZ Channel helpers (NZ only) ----------------
 const CANON_NZ_CHANNELS = ["grocery", "on premise", "off premise"];
 
@@ -206,20 +229,37 @@ export default function FilterBar({ filters, onFilterChange }) {
        // ---------- Load sales (only to get USA states + options) ----------
        const salesMetadataRaw = localStorage.getItem("vc_sales_metadata");
        let salesData = [];
-   
+
+       const sheetMatchesSelectedCountry = (sheetName, selectedCountry) => {
+         const sn = String(sheetName || "").toUpperCase();
+
+         if (!selectedCountry || selectedCountry === "all") return true;
+
+         if (selectedCountry === "usa") return sn.includes("USA");
+         if (selectedCountry === "au-b") return sn.includes("AU-B") || sn.includes("AUB");
+         if (selectedCountry === "au-c") return sn.includes("AU-C") || sn.includes("AUC");
+         if (selectedCountry === "nzl") return sn === "NZ" || sn === "NZL" || sn.includes("NZ");
+         if (selectedCountry === "ire") return sn.includes("IRE");
+
+         return false;
+       };
+
        if (salesMetadataRaw) {
          const salesMeta = safeJson(salesMetadataRaw);
+         const selectedCountry = String(filters.country || "all").toLowerCase();
+
          if (salesMeta?.sheetNames && Array.isArray(salesMeta.sheetNames)) {
            salesMeta.sheetNames.forEach((sheetName) => {
-             if (String(sheetName).toUpperCase().includes("USA")) {
-               const key = `vc_sales_data_${sheetName}`;
-               const sheetData = localStorage.getItem(key);
-               const parsed = sheetData ? safeJson(sheetData) : null;
-               if (Array.isArray(parsed)) salesData.push(...parsed);
-             }
+             if (!sheetMatchesSelectedCountry(sheetName, selectedCountry)) return;
+
+             const key = `vc_sales_data_${sheetName}`;
+             const sheetData = localStorage.getItem(key);
+             const parsed = sheetData ? safeJson(sheetData) : null;
+             if (Array.isArray(parsed)) salesData.push(...parsed);
            });
          }
        }
+     
   
   
       // If nothing at all, return empty options
@@ -359,24 +399,65 @@ export default function FilterBar({ filters, onFilterChange }) {
       // ---------- Distributor + State options ----------
       const locationSet = new Set();
       const stateSet = new Set();
+      const wineTypeSet = new Set();
+      const brandSet = new Set();
+
   
       countryFilteredData.forEach((r) => {
-        const loc = String(r.Location || "").trim();
-        if (!loc || loc === "Unknown") return;
-  
+        // inside the loop that builds dropdown sets
+        const loc = String(r.Location ?? r.location ?? "").trim();
+
+        // ✅ ALWAYS add brand/wine-type first (so early returns don't break brand filter)
+        const bc = String(r.BrandCode ?? r.brandCode ?? "").trim().toLowerCase();
+        if (bc) brandSet.add(bc);
+
+        const wt = String(r.AdditionalAttribute3 ?? r.VarietyCode ?? r.varietyCode ?? "").trim().toUpperCase();
+        if (wt) wineTypeSet.add(wt);
+
+        // ---------------- USA: state list from Location ----------------
         if (countryFilter === "usa") {
           const upper = loc.toUpperCase();
           if (upper.includes("DIST")) return;
           if (upper.includes("STATE") && !upper.match(/^[A-Z]{2}$/)) return;
           if (loc.length >= 2 && !loc.match(/^(dist|state|district)/i)) stateSet.add(loc);
-        } else {
-          // strip prefixes if any
-          let cleaned = loc.replace(/^[A-Z]{2,3}\s*-\s*/i, "").trim();
-          if (!cleaned || cleaned === loc) cleaned = loc.replace(/^[A-Z]{2,3}\s+/i, "").trim();
-          if (!cleaned) cleaned = loc;
-          locationSet.add(cleaned);
+          return;
         }
-      });
+
+        // ---------------- AU-B: state list from State (fallback from Location prefix) ----------------
+        if (countryFilter === "au-b") {
+          const rawState =
+            r.State ??
+            r.state ??
+            r._state ??                              // your normalizer sets _state
+            (typeof loc === "string" ? loc.split("_")[0] : "") ?? // fallback: "NSW_customer" -> "NSW"
+            "";
+
+          const st = normalizeAusState(rawState);
+
+          // only allow these in dropdown
+          if (st && ["NSW", "VIC", "QLD"].includes(st)) stateSet.add(st);
+
+          // ✅ IMPORTANT: still populate distributor/customer list if you use it
+          // If you don't want a distributor dropdown for AU-B, delete this block.
+          const customer =
+            r._customer ??
+            r.Customer ??
+            r["Customer/Project"] ??
+            (typeof loc === "string" && loc.includes("_") ? loc.split("_").slice(1).join("_") : "");
+
+          const custClean = String(customer || "").trim();
+          if (custClean) locationSet.add(custClean);
+
+          return;
+        }
+
+        // ---------------- other countries: treat Location as distributor-ish ----------------
+        let cleaned = loc.replace(/^[A-Z]{2,3}\s*-\s*/i, "").trim();
+        if (!cleaned || cleaned === loc) cleaned = loc.replace(/^[A-Z]{2,3}\s+/i, "").trim();
+        if (!cleaned) cleaned = loc;
+        if (cleaned) locationSet.add(cleaned);
+              });
+       
   
       const distributors = Array.from(locationSet).sort((a, b) => a.localeCompare(b));
       const states = Array.from(stateSet).sort((a, b) => a.localeCompare(b));
@@ -555,7 +636,7 @@ export default function FilterBar({ filters, onFilterChange }) {
 
 
           {/* State filter for USA only */}
-          {filters.country === "usa" && (
+          {(filters.country === "usa" || filters.country === "au-b") && (
             <Select value={filters.state || "all"} onValueChange={(value) => onFilterChange('state', value)}>
               <SelectTrigger className="w-full sm:w-48 text-sm">
                 <SelectValue placeholder="State" />

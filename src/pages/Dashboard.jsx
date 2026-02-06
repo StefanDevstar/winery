@@ -12,6 +12,106 @@ import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
 
+// ───────── AU-B state helpers ─────────
+function inferAUBStateFromDistributorHeader(v) {
+  const s = String(v || "").toUpperCase();
+
+  if (/\bSYD\b/.test(s) || s.includes("SYDNEY")) return "NSW";
+  if (/\bMEL\b/.test(s) || s.includes("MELBOURNE")) return "VIC";
+  if (/\bBNE\b/.test(s) || s.includes("BRIS") || s.includes("BRISBANE")) return "QLD";
+
+  return "";
+}
+
+function buildAubDsohColMap(aubRows) {
+  // Find the header-ish row that contains "ITEM"
+  const headerRow =
+    aubRows.find(r => String(r?.Code || "").trim().toUpperCase() === "ITEM") ||
+    aubRows.find(r => String(r?.VarietyCode || "").trim().toUpperCase() === "ITEM") ||
+    aubRows.find(r => String(r?.ProductName || "").trim().toUpperCase() === "ITEM");
+
+  const raw = headerRow?._originalData ?? headerRow ?? {};
+  const map = [];
+
+  for (const [colKey, headerText] of Object.entries(raw)) {
+    const txt = String(headerText || "").trim();
+
+    // Only keep BW warehouse columns
+    if (!/BW\d{2}-/i.test(txt) && !/\bSYD\b|\bMEL\b|\bBNE\b/i.test(txt)) continue;
+
+    const st = inferAUBStateFromDistributorHeader(txt); // your helper
+    if (st) map.push({ colKey, state: st, headerText: txt });
+  }
+
+  return map; // [{colKey:"Column_3", state:"NSW", headerText:"BW01-SYD"}, ...]
+}
+
+const AUB_STATES = ["NSW", "VIC", "QLD"];
+
+function normalizeAubState(v) {
+  const s = String(v || "").trim().toUpperCase();
+  if (!s) return "";
+  if (s === "NEW SOUTH WALES") return "NSW";
+  if (s === "VICTORIA") return "VIC";
+  if (s === "QUEENSLAND") return "QLD";
+  if (AUB_STATES.includes(s)) return s;
+  return s; // fallback (keeps unknowns visible in debug)
+}
+
+function getAubStateFromSalesRow(row) {
+  const raw =
+    row?.State ??
+    row?.state ??
+    row?.["STATE"] ??
+    row?.["State"] ??
+    row?.["AU State"] ??
+    row?.["AU_STATE"];
+  return normalizeAubState(raw);
+}
+
+function parseNumberLooseLocal(v) {
+  if (v == null) return 0;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  const s = String(v).replace(/,/g, "").trim();
+  if (!s) return 0;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// AU-B DSOH sheet is "wide": BW01-SYD / BW03-MEL / BW04-BNE... are columns.
+// We convert those into an OnHand number based on selected AU state filter.
+function getAubOnHandFromWideRow(row, aubStateFilter, colMap) {
+  const want = aubStateFilter ? normalizeAubState(aubStateFilter) : "";
+  const raw = row?._originalData ?? row ?? {};
+
+  // Preferred path: Column_* keys mapped from ITEM row
+  if (Array.isArray(colMap) && colMap.length) {
+    let sum = 0;
+    for (const m of colMap) {
+      if (want && m.state !== want) continue;
+      sum += parseNumberLooseLocal(raw[m.colKey]);
+    }
+    return sum;
+  }
+
+  // Fallback: if BW headers really are keys on the row
+  let sum = 0;
+  for (const [kRaw, v] of Object.entries(raw)) {
+    const k = String(kRaw || "").trim().toUpperCase();
+    if (!/^BW\d{2}-/.test(k)) continue;
+
+    let st = "";
+    if (k.includes("-SYD")) st = "NSW";
+    else if (k.includes("-MEL")) st = "VIC";
+    else if (k.includes("-BNE")) st = "QLD";
+    else continue;
+
+    if (want && st !== want) continue;
+    sum += parseNumberLooseLocal(v);
+  }
+  return sum;
+}
+
 function looksLikeAuC(v) {
   const s = String(v || "").toLowerCase();
   return s === "au-c" || s === "auc" || s.includes("au-c") || s.includes("au c");
@@ -619,18 +719,52 @@ export default function Dashboard() {
             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
           ];
 
-          // Pre-compute filter values for efficiency
-          const countryFilter = filters.country === "all" ? null : filters.country.toLowerCase();
-          const distributorFilter = filters.distributor === "all" ? null : filters.distributor.replace(/_/g, " ").toLowerCase();
-          const stateFilter = filters.state === "all" ? null : filters.state.trim();
-          const wineTypeFilter = filters.wineType === "all" ? null : filters.wineType.replace(/_/g, " ").toLowerCase();
-          const wineTypeCode = filters.wineType === "all" ? null : filters.wineType.split("_")[0];
-          const yearFilter = filters.year === "all" ? null : filters.year.toString();
-          const brandFilter = filters.brand && filters.brand !== "all" ? filters.brand.toLowerCase() : null;
-          const channelFilter =
-            countryFilter === "nzl" && filters.channel && filters.channel !== "all"
-              ? normalizeChannel(filters.channel)
+         // ───────── Pre-compute filter values (single source of truth) ─────────
+        const countryFilter =
+        filters.country && filters.country !== "all"
+          ? normalizeCountryCode(filters.country).toLowerCase()
+          : null;
+
+        const distributorFilter =
+        filters.distributor && filters.distributor !== "all"
+          ? String(filters.distributor).replace(/_/g, " ").toLowerCase()
+          : null;
+        
+          const stateFilter =
+            filters.state && filters.state !== "all"
+              ? String(filters.state).trim()
               : null;
+
+          const usaStateWant =
+            countryFilter === "usa" && stateFilter
+              ? stateFilter.toUpperCase()
+              : "";
+
+          const aubStateWant =
+            countryFilter === "au-b" && stateFilter
+              ? normalizeAubState(stateFilter)
+              : "";
+
+        const wineTypeFilter =
+        filters.wineType && filters.wineType !== "all"
+          ? String(filters.wineType).replace(/_/g, " ").toLowerCase()
+          : null;
+
+        const wineTypeCode =
+        filters.wineType && filters.wineType !== "all"
+          ? String(filters.wineType).split("_")[0] // your existing convention
+          : null;
+
+        const yearFilter =
+        filters.year && filters.year !== "all"
+          ? String(filters.year)
+          : null;
+
+        const brandFilter = filters.brand && filters.brand !== "all" ? filters.brand.toLowerCase() : null;
+        const channelFilter =
+          countryFilter === "nzl" && filters.channel && filters.channel !== "all"
+            ? normalizeChannel(filters.channel)
+            : null;
 
 
           distributorStockOnHand = divideBy12IfIrelandOrAuC(distributorStockOnHand, countryFilter);
@@ -663,92 +797,134 @@ export default function Dashboard() {
 
 
 
-          // ───────── Pre-fix distributor stock rows BEFORE filtering ─────────
-          const distributorStockOnHandFixed = (distributorStockOnHand || [])
-          .map((row) => {
-            const c = normalizeCountryCode(row?.AdditionalAttribute2 || row?.Market || row?._sheetName || "").toLowerCase();
+         // ───────── AU-B DSOH column map (BW01-SYD / BW03-MEL / BW04-BNE...) ─────────
+        // Place this RIGHT BEFORE distributorStockOnHandFixed is defined.
+        const aubRows2 = (distributorStockOnHand || []).filter(r => {
+          const c = normalizeCountryCode(r?.AdditionalAttribute2 || r?.Market || r?._sheetName || "").toLowerCase();
+          return c === "au-b";
+        });
 
+        const aubColMap = buildAubDsohColMap(aubRows2);
 
-            const pn = String(row?.ProductName || "").trim();
-            const prod = String(row?.Product || "").trim();
+        // ───────── Pre-fix distributor stock rows BEFORE filtering ─────────
+        const distributorStockOnHandFixed = (distributorStockOnHand || []).map((row) => {
+          const c = normalizeCountryCode(row?.AdditionalAttribute2 || row?.Market || row?._sheetName || "").toLowerCase();
 
-            const pnLower = pn.toLowerCase();
-            const prodLower = prod.toLowerCase();
+          const pn = String(row?.ProductName || "").trim();
+          const prod = String(row?.Product || "").trim();
 
-            // USA junk (what you already had)
-            const isJunkUSA =
-              !pn ||
-              pnLower === "country" ||
-              pnLower === "wines" ||
-              pnLower === "total" ||
-              pnLower === "usa";
+          const pnLower = pn.toLowerCase();
+          const prodLower = prod.toLowerCase();
 
-            // AU-B junk/header rows seen in your console.table
-            const isJunkAUB =
-              !pn ||
-              pnLower.includes("bacchus group") ||
-              pnLower.includes("options:") ||
-              pnLower === "item" ||
-              pnLower === "total" ||
-              prodLower === "description";
+          // USA junk (what you already had)
+          const isJunkUSA =
+            !pn ||
+            pnLower === "country" ||
+            pnLower === "wines" ||
+            pnLower === "total" ||
+            pnLower === "usa";
 
-            // ✅ USA: fix ProductName from Product if junk
-            if (c === "usa" && isJunkUSA && prod) {
-              return { ...row, ProductName: prod };
+          // AU-B junk/header rows seen in your console.table
+          const isJunkAUB =
+            !pn ||
+            pnLower.includes("bacchus group") ||
+            pnLower.includes("options:") ||
+            pnLower === "item" ||
+            pnLower === "total" ||
+            prodLower === "description";
+
+          // ✅ USA: fix ProductName from Product if junk
+          if (c === "usa" && isJunkUSA && prod) {
+            return { ...row, ProductName: prod };
+          }
+
+          // ✅ AU-B: do NOT early-return; we need to compute OnHand below
+          if (c === "au-b") {
+            const next = { ...row };
+
+            // Replace ProductName with Product (only if Product looks real OR ProductName is junk)
+            const productLooksReal =
+              prod &&
+              prodLower !== "description" &&
+              prodLower !== "product" &&
+              prodLower !== "item" &&
+              (
+                prodLower.includes("jules taylor") ||
+                prodLower.includes("the better half") ||
+                prodLower.includes("on the quiet") ||
+                prodLower.includes("sauvignon") ||
+                prodLower.includes("pinot") ||
+                prodLower.includes("chardonnay") ||
+                prodLower.includes("riesling") ||
+                prodLower.includes("gruner") ||
+                prodLower.includes("ros") ||
+                prodLower.includes("rose")
+              );
+
+            if ((isJunkAUB || !pn) && prod) {
+              // if ProductName is junk/header, prefer Product if present
+              next.ProductName = prod;
+            } else if (productLooksReal) {
+              // if Product is real wine description, prefer it for display
+              next.ProductName = prod;
             }
 
-            // ✅ AU-B: Product holds the wine name, ProductName holds the code
-            // Replace ProductName with Product (only if Product looks real)
-            if (c === "au-b") {
-              // If Product is a real wine description, prefer it
-              const productLooksReal =
-                prod &&
-                prodLower !== "description" &&
-                (prodLower.includes("jules taylor") ||
-                  prodLower.includes("the better half") ||
-                  prodLower.includes("on the quiet") ||
-                  prodLower.includes("sauvignon") ||
-                  prodLower.includes("pinot") ||
-                  prodLower.includes("chardonnay") ||
-                  prodLower.includes("riesling") ||
-                  prodLower.includes("gruner") ||
-                  prodLower.includes("ros"));
+            // ✅ Always compute AU-B OnHand from wide BW columns (state-aware)
+            // aubStateFilter must already exist in scope (from your precomputed filters)
+            const onHand = getAubOnHandFromWideRow(next, aubStateWant, aubColMap);
+            next.OnHand = onHand;
+            next.StockOnHand = onHand;
 
-              if (productLooksReal) {
-                return { ...row, ProductName: prod }; // ✅ key fix for AU-B
-              }
-            }
+            return next;
+          }
 
-            return row;
-          })
+          return row;
+        });
 
-        
+        // ───────── Filter Distributor Stock On Hand ─────────
+        const filteredDistributorStockOnHand = [];
 
-          // ───────── Filter Distributor Stock On Hand ─────────
-          // Filter distributor stock on hand data (actual stock at distributors)
-          const filteredDistributorStockOnHand = [];
-          for (let i = 0; i < distributorStockOnHandFixed.length; i++) {
-            const r = distributorStockOnHandFixed[i];
-            
-            // Apply filters
-            if (countryFilter) {
-              const rawCountryCode = (r.AdditionalAttribute2 || r.Market || r._sheetName || r.MarketCode || "");
+        // normalize state filters once (prevents case issues)
+        for (let i = 0; i < distributorStockOnHandFixed.length; i++) {
+          const r = distributorStockOnHandFixed[i];
 
-              const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
-              const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
-              if (countryCode !== normalizedFilter) continue;
-            }
-            
-            // For USA, filter by state (Location field contains state name)
-            if (countryFilter === 'usa' && stateFilter) {
-              const location = (r.Location || "").trim();
-              if (location !== stateFilter) {
-                continue;
-              }
-            }
-            
-            // For other countries, filter by distributor
-            if (countryFilter !== 'usa' && distributorFilter) {
+          // ───────── country filter ─────────
+          if (countryFilter) {
+            const rawCountryCode = (r.AdditionalAttribute2 || r.Market || r._sheetName || r.MarketCode || "");
+            const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
+            const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
+            if (countryCode !== normalizedFilter) continue;
+          }
+
+          // ───────── USA: state filter (Location holds state) ─────────
+          if (countryFilter === "usa" && usaStateWant) {
+            const location = String(r.Location || "").trim().toUpperCase();
+            if (location !== usaStateWant) continue;
+          }
+
+          // ───────── AU-B: state filter (state-aware OnHand already computed in distributorStockOnHandFixed) ─────────
+          // IMPORTANT:
+          // - Your AU-B DSOH is "wide", so we already computed next.OnHand using aubStateFilter earlier.
+          // - Here we only need to filter out header junk and optionally keep dropdown state behavior consistent.
+          if (countryFilter === "au-b" && aubStateWant) {
+            // If you have state stored on the row, use it; otherwise don't block rows (OnHand already state-summed).
+            const st = getAubStateFromSalesRow(r); // uses your helper normalizeAubState()
+            if (st && st !== aubStateWant) continue;
+          }
+
+          // ───────── distributor filter ─────────
+          // For AU-B:
+          // - If a state is selected, IGNORE distributorFilter to avoid empty results.
+          // - If no state selected, allow distributorFilter as a simple contains match.
+          if (countryFilter !== "usa" && distributorFilter) {
+            if (countryFilter === "au-b" && aubStateWant) {
+              // ignore distributorFilter when AU-B state is active
+            } else if (countryFilter === "au-b") {
+              const loc = String(r.Location || r.Distributor || "").toLowerCase().replace(/_/g, " ");
+              const want = String(distributorFilter).toLowerCase();
+              if (!loc.includes(want) && !want.includes(loc)) continue;
+            } else {
+              // your existing non-AU-B cleanup logic (strip prefixes like "NZ - ", "IRE - ", etc.)
               let location = (r.Location || r.Distributor || "").toLowerCase().replace(/_/g, " ");
               let locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s*-\s*/i, "").trim();
               if (!locationWithoutPrefix || locationWithoutPrefix === location) {
@@ -757,127 +933,132 @@ export default function Dashboard() {
               if (!locationWithoutPrefix || locationWithoutPrefix === location) {
                 locationWithoutPrefix = location;
               }
-              const normalizedFilter = distributorFilter.toLowerCase();
+              const normalizedFilter = String(distributorFilter).toLowerCase();
               if (!locationWithoutPrefix.includes(normalizedFilter) &&
                   !normalizedFilter.includes(locationWithoutPrefix)) {
                 continue;
               }
             }
+          }
 
-          
+          // ───────── brand filter ─────────
+          if (brandFilter) {
+            if (!matchesBrand(r, brandFilter)) continue;
+          }
 
-                      
-            if (brandFilter) {
-              if (!matchesBrand(r, brandFilter)) continue;
-            }
-            
-            
-            if (wineTypeFilter || wineTypeCode) {
-              // Check both AdditionalAttribute3 and VarietyCode fields
-              const wineCode = (r.AdditionalAttribute3 || "").toLowerCase();
-              const varietyCode = (r.VarietyCode || "").toLowerCase();
-              const productName = (r.ProductName || "").toLowerCase();
-              
-              // Map wine type codes (from filter) to their full names and variations for matching
-              const codeToNameMap = {
-                'sab': ['sauvignon blanc', 'sauvignon', 'sab'],
-                'pin': ['pinot noir', 'pin'],
-                'chr': ['chardonnay', 'chr'],
-                'pig': ['pinot gris', 'pinot grigio', 'pig'],
-                'rose': ['rose', 'rosé'],
-                'gru': ['gruner veltliner', 'gruner', 'gru'],
-                'lhs': ['late harvest sauvignon', 'lhs'],
-                'ries': ['riesling']
-              };
-              
-              let matchesWine = false;
-              
-              if (wineTypeCode) {
-                const code = wineTypeCode.toLowerCase();
-                const codeUpper = code.toUpperCase();
-                
-                // PRIORITY 1: Check AdditionalAttribute3 and VarietyCode - exact match first
-                if (!matchesWine) {
-                  matchesWine = wineCode === code ||
-                               wineCode === codeUpper ||
-                               wineCode.trim() === code ||
-                               wineCode.trim() === codeUpper ||
-                               varietyCode === code ||
-                               varietyCode === codeUpper ||
-                               varietyCode.trim() === code ||
-                               varietyCode.trim() === codeUpper;
+          // ───────── wine type filter (your existing logic unchanged) ─────────
+          if (wineTypeFilter || wineTypeCode) {
+            const wineCode = (r.AdditionalAttribute3 || "").toLowerCase();
+            const varietyCode = (r.VarietyCode || "").toLowerCase();
+            const productName = (r.ProductName || "").toLowerCase();
+
+            const codeToNameMap = {
+              sab: ["sauvignon blanc", "sauvignon", "sab"],
+              pin: ["pinot noir", "pin"],
+              chr: ["chardonnay", "chr"],
+              pig: ["pinot gris", "pinot grigio", "pig"],
+              rose: ["rose", "rosé"],
+              gru: ["gruner veltliner", "gruner", "gru"],
+              lhs: ["late harvest sauvignon", "lhs"],
+              ries: ["riesling"],
+            };
+
+            let matchesWine = false;
+
+            if (wineTypeCode) {
+              const code = wineTypeCode.toLowerCase();
+              const codeUpper = code.toUpperCase();
+
+              // PRIORITY 1: exact matches in AA3 / VarietyCode
+              if (!matchesWine) {
+                matchesWine =
+                  wineCode === code ||
+                  wineCode === codeUpper ||
+                  wineCode.trim() === code ||
+                  wineCode.trim() === codeUpper ||
+                  varietyCode === code ||
+                  varietyCode === codeUpper ||
+                  varietyCode.trim() === code ||
+                  varietyCode.trim() === codeUpper;
+              }
+
+              // compound formats
+              if (!matchesWine) {
+                matchesWine =
+                  wineCode.includes(`_${code}_`) ||
+                  wineCode.includes(`_${codeUpper}_`) ||
+                  wineCode.startsWith(`${code}_`) ||
+                  wineCode.startsWith(`${codeUpper}_`) ||
+                  wineCode.endsWith(`_${code}`) ||
+                  wineCode.endsWith(`_${codeUpper}`) ||
+                  wineCode.indexOf(`_${code}_`) >= 0 ||
+                  wineCode.indexOf(`_${codeUpper}_`) >= 0 ||
+                  varietyCode.includes(`_${code}_`) ||
+                  varietyCode.includes(`_${codeUpper}_`) ||
+                  varietyCode.startsWith(`${code}_`) ||
+                  varietyCode.startsWith(`${codeUpper}_`) ||
+                  varietyCode.endsWith(`_${code}`) ||
+                  varietyCode.endsWith(`_${codeUpper}`) ||
+                  varietyCode.indexOf(`_${code}_`) >= 0 ||
+                  varietyCode.indexOf(`_${codeUpper}_`) >= 0;
+              }
+
+              // normalizeWineTypeToCode fallback
+              if (!matchesWine) {
+                const normalizedWineCode = normalizeWineTypeToCode(wineCode.toUpperCase()).toLowerCase();
+                const normalizedVarietyCode = normalizeWineTypeToCode(varietyCode.toUpperCase()).toLowerCase();
+                if (
+                  normalizedWineCode === code || normalizedWineCode === codeUpper ||
+                  normalizedVarietyCode === code || normalizedVarietyCode === codeUpper
+                ) {
+                  matchesWine = true;
                 }
-                
-                // Then check for variety code in compound formats in both fields
-                if (!matchesWine) {
-                  matchesWine = wineCode.includes(`_${code}_`) || 
-                               wineCode.includes(`_${codeUpper}_`) ||
-                               wineCode.startsWith(`${code}_`) || 
-                               wineCode.startsWith(`${codeUpper}_`) ||
-                               wineCode.endsWith(`_${code}`) ||
-                               wineCode.endsWith(`_${codeUpper}`) ||
-                               wineCode.indexOf(`_${code}_`) >= 0 ||
-                               wineCode.indexOf(`_${codeUpper}_`) >= 0 ||
-                               varietyCode.includes(`_${code}_`) || 
-                               varietyCode.includes(`_${codeUpper}_`) ||
-                               varietyCode.startsWith(`${code}_`) || 
-                               varietyCode.startsWith(`${codeUpper}_`) ||
-                               varietyCode.endsWith(`_${code}`) ||
-                               varietyCode.endsWith(`_${codeUpper}`) ||
-                               varietyCode.indexOf(`_${code}_`) >= 0 ||
-                               varietyCode.indexOf(`_${codeUpper}_`) >= 0;
-                }
-                
-                // PRIORITY 2: Check if wineCode or varietyCode itself is a full wine name (normalizeWineTypeToCode might have returned full text)
-                if (!matchesWine) {
-                  const normalizedWineCode = normalizeWineTypeToCode(wineCode.toUpperCase()).toLowerCase();
-                  const normalizedVarietyCode = normalizeWineTypeToCode(varietyCode.toUpperCase()).toLowerCase();
-                  if (normalizedWineCode === code || normalizedWineCode === codeUpper ||
-                      normalizedVarietyCode === code || normalizedVarietyCode === codeUpper) {
-                    matchesWine = true;
-                  }
-                }
-                
-                // PRIORITY 3: Check for full variety names in both fields
-                if (!matchesWine && codeToNameMap[code]) {
-                  for (const name of codeToNameMap[code]) {
-                    const variations = [
-                      name,
-                      name.replace(/\s+/g, ''),
-                      name.toUpperCase(),
-                      name.toUpperCase().replace(/\s+/g, '')
-                    ];
-                    
-                    for (const variation of variations) {
-                      if (wineCode.includes(variation.toLowerCase()) || 
-                          varietyCode.includes(variation.toLowerCase())) {
-                        matchesWine = true;
-                        break;
-                      }
-                    }
-                    if (matchesWine) break;
-                  }
-                }
-                
-                // PRIORITY 4: Check product name
-                if (!matchesWine && codeToNameMap[code] && productName) {
-                  for (const name of codeToNameMap[code]) {
-                    if (productName.includes(name)) {
+              }
+
+              // full variety names in wineCode/varietyCode
+              if (!matchesWine && codeToNameMap[code]) {
+                for (const name of codeToNameMap[code]) {
+                  const variations = [
+                    name,
+                    name.replace(/\s+/g, ""),
+                    name.toUpperCase(),
+                    name.toUpperCase().replace(/\s+/g, ""),
+                  ];
+
+                  for (const variation of variations) {
+                    if (
+                      wineCode.includes(variation.toLowerCase()) ||
+                      varietyCode.includes(variation.toLowerCase())
+                    ) {
                       matchesWine = true;
                       break;
                     }
                   }
+                  if (matchesWine) break;
                 }
               }
-              
-              if (!matchesWine) {
-                continue;
+
+              // product name contains variety
+              if (!matchesWine && codeToNameMap[code] && productName) {
+                for (const name of codeToNameMap[code]) {
+                  if (productName.includes(name)) {
+                    matchesWine = true;
+                    break;
+                  }
+                }
               }
-              
             }
-            
-            filteredDistributorStockOnHand.push(r);
+
+            if (!matchesWine) continue;
           }
+
+          filteredDistributorStockOnHand.push(r);
+        }
+
+
+
+        
+
           // DEBUG: channel detection preview (Sales / depletion summary)
           if (countryFilter === "nzl") {
             const channelKeyCandidates = ["Channel", "channel", "CHANNEL", "Sales Channel", "sales_channel"];
@@ -924,248 +1105,221 @@ export default function Dashboard() {
             salesDataLen: salesData?.length,
           });
           
+      // ───────── Filter Sales Data (Depletion Summary) ─────────
+      const filteredStock = [];
 
-          // ───────── Filter Sales Data (Depletion Summary) ─────────
-          // Filter sales/depletion data for sales predictions
-          const filteredStock = [];
-          for (let i = 0; i < salesData.length; i++) {
-            const r = salesData[i];
-            
-            // Early exit for country filter (most selective)
-            if (countryFilter) {
-              const rawCountryCode = (
-                r.AdditionalAttribute2 ||
-                r.Market ||
-                r.Country ||
-                r.MarketCode ||
-                r._sheetName ||
-                ""
-              ).toString().trim();
-              
-              const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
-              const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
-      
-            
-              if (countryCode !== normalizedFilter) continue;
-            }
-            // NZ only: Channel filter
-            if (channelFilter) {
-              if (!matchesChannel(r, channelFilter)) continue;
-            }
+      for (let i = 0; i < salesData.length; i++) {
+        const r = salesData[i];
 
-            
-            
-            
-            // Early exit for year filter
-            if (yearFilter) {
-              // Check multiple possible year fields: _year, Vintage, Year
-              const recordYear = (r._year || r.Vintage || r.Year || "").toString().trim();
-              // Extract year from vintage if it's in format like "2022" or "22"
-              let yearMatch = false;
-              if (recordYear) {
-                // If vintage is like "2022", extract it
-                const yearMatch202x = recordYear.match(/20(\d{2})/);
-                const yearMatch2x = recordYear.match(/^(\d{2})$/);
-                if (yearMatch202x) {
-                  yearMatch = yearMatch202x[0] === yearFilter || yearMatch202x[1] === yearFilter.slice(-2);
-                } else if (yearMatch2x) {
-                  // Convert 2-digit year to 4-digit
-                  const fullYear = parseInt(yearMatch2x[1]) >= 50 
-                    ? `19${yearMatch2x[1]}` 
-                    : `20${yearMatch2x[1]}`;
-                  yearMatch = fullYear === yearFilter;
-                } else {
-                  yearMatch = recordYear === yearFilter || recordYear.includes(yearFilter);
-                }
-              }
-              // Also check if year is in wine code (e.g., "JT_22_SAB" contains "22")
-              if (!yearMatch && r.AdditionalAttribute3) {
-                const wineCode = r.AdditionalAttribute3.toString();
-                const yearInCode = wineCode.match(/_(\d{2})_|_(\d{4})_|^(\d{2})|^(\d{4})/);
-                if (yearInCode) {
-                  const foundYear = yearInCode[1] || yearInCode[2] || yearInCode[3] || yearInCode[4];
-                  if (foundYear) {
-                    const fullYear = foundYear.length === 2
-                      ? (parseInt(foundYear) >= 50 ? `19${foundYear}` : `20${foundYear}`)
-                      : foundYear;
-                    yearMatch = fullYear === yearFilter;
-                  }
-                }
-              }
-              if (!yearMatch) continue;
-            }
-            
-            // For USA, filter by state (Location field contains state name)
-            if (countryFilter === 'usa' && stateFilter) {
-              const location = (r.Location || "").trim();
-              if (location !== stateFilter) {
-                continue;
-              }
-            }
-            
-            // For other countries, filter by distributor
-            if (countryFilter !== 'usa' && distributorFilter) {
-              let location = (r.Location || "").toLowerCase().replace(/_/g, " ");
-              // Strip country code prefix if present (fallback for other data sources that might still have it)
-              let locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s*-\s*/i, "").trim();
-              if (!locationWithoutPrefix || locationWithoutPrefix === location) {
-                locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s+/i, "").trim();
-              }
-              // If still no change, use original location (no prefix was present)
-              if (!locationWithoutPrefix || locationWithoutPrefix === location) {
-                locationWithoutPrefix = location;
-              }
-              const normalizedFilter = distributorFilter.toLowerCase();
-              
-              // Match against location (filter has no prefix)
-              if (!locationWithoutPrefix.includes(normalizedFilter) &&
-                  !normalizedFilter.includes(locationWithoutPrefix)) {
-                continue;
-              }
-            }
+        // Compute row country once (used by country + NZ-only channel)
+        const rawCountryCode = (
+          r.AdditionalAttribute2 ||
+          r.Market ||
+          r.Country ||
+          r.MarketCode ||
+          r._sheetName ||
+          ""
+        ).toString().trim();
 
-              // ---- BRAND FILTER ----
-              if (brandFilter) {
-                if (!matchesBrand(r, brandFilter)) continue;
-              }
-            
-            // Early exit for wine type filter
-            if (wineTypeFilter || wineTypeCode) {
-              const wineCode = (r.AdditionalAttribute3 || "").toLowerCase();
-              const productName = (r.ProductName || "").toLowerCase();
-              // Extract variety from ProductName if Variety field doesn't exist (e.g., NZL data)
-              let variety = (r.Variety || "").toLowerCase();
-              if (!variety && productName) {
-                // Try to extract variety from product name (format: "Brand Variety" or "Brand Variety Vintage")
-                const parts = productName.split(/\s+/);
-                // Skip first part (brand) and take the rest as variety
-                if (parts.length > 1) {
-                  variety = parts.slice(1).join(' ').toLowerCase();
-                }
-              }
-              
-              // Also extract variety from wine code if it's in format "BRAND_VARIETY" (NZL format)
-              if (!variety && wineCode) {
-                const parts = wineCode.split('_');
-                if (parts.length > 1) {
-                  // Skip first part (brand) and join the rest as variety
-                  variety = parts.slice(1).join(' ').toLowerCase();
-                }
-              }
+        const rowCountry = normalizeCountryCode(rawCountryCode).toLowerCase();
 
-     
+        // Country filter
+        if (countryFilter) {
+          const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
+          if (rowCountry !== normalizedFilter) continue;
+        }
 
-              
-              // Map wine type codes (from filter) to their full names and variations for matching in AdditionalAttribute3
-              // This is critical because AdditionalAttribute3 may contain full names, not codes
-              const codeToNameMap = {
-                'sab': ['sauvignon blanc', 'sauvignon', 'sab'],
-                'pin': ['pinot noir', 'pin'],
-                'chr': ['chardonnay', 'chr'],
-                'pig': ['pinot gris', 'pinot grigio', 'pig'],
-                'rose': ['rose', 'rosé'], // Include accented version
-                'gru': ['gruner veltliner', 'gruner', 'gru'],
-                'lhs': ['late harvest sauvignon', 'lhs'],
-                'ries': ['riesling']
-              };
-              
-              let matchesWine = false;
-              
-              if (wineTypeCode) {
-                const code = wineTypeCode.toLowerCase();
-                const codeUpper = code.toUpperCase();
-                
-                // PRIORITY 1: Check AdditionalAttribute3 (wineCode) - this is the PRIMARY field
-                // First check for exact match (most common for normalized codes like SAB, PIN, etc.)
-                if (!matchesWine) {
-                  matchesWine = wineCode === code ||
-                               wineCode === codeUpper ||
-                               wineCode.trim() === code ||
-                               wineCode.trim() === codeUpper;
-                }
-                
-                // Then check for variety code in compound formats (e.g., BRAND_CODE_VINTAGE or CODE_VINTAGE)
-                if (!matchesWine) {
-                  matchesWine = wineCode.includes(`_${code}_`) || 
-                               wineCode.includes(`_${codeUpper}_`) ||
-                               wineCode.startsWith(`${code}_`) || 
-                               wineCode.startsWith(`${codeUpper}_`) ||
-                               wineCode.endsWith(`_${code}`) ||
-                               wineCode.endsWith(`_${codeUpper}`) ||
-                               wineCode.indexOf(`_${code}_`) >= 0 ||
-                               wineCode.indexOf(`_${codeUpper}_`) >= 0;
-                }
-                
-                // PRIORITY 2: Check if wineCode itself is a full wine name (normalizeWineTypeToCode might have returned full text)
-                // Try to normalize the wineCode and see if it matches
-                if (!matchesWine) {
-                  const normalizedWineCode = normalizeWineTypeToCode(wineCode.toUpperCase()).toLowerCase();
-                  if (normalizedWineCode === code || normalizedWineCode === codeUpper) {
-                    matchesWine = true;
-                  }
-                }
-                
-                // PRIORITY 3: Check for full variety names (most common in NZL data or when normalizeWineTypeToCode returns full text)
-                if (!matchesWine && codeToNameMap[code]) {
-                  for (const name of codeToNameMap[code]) {
-                    // Create all possible variations
-                    const variations = [
-                      name,                                    // "pinot gris"
-                      name,              // "pinot_gris"
-                      name.replace(/\s+/g, ''),               // "pinotgris"
-                      name.toUpperCase(),                      // "PINOT GRIS"
-                      name.toUpperCase(), // "PINOT_GRIS"
-                      name.toUpperCase().replace(/\s+/g, '')   // "PINOTGRIS"
-                    ];
-                    
-                    // Check if wineCode contains any variation (case-insensitive)
-                    for (const variation of variations) {
-                      if (wineCode.includes(variation.toLowerCase())) {
-                        matchesWine = true;
-                        break;
-                      }
-                    }
-                    if (matchesWine) break;
-                  }
-                }
-                
-                // PRIORITY 3: Check extracted variety and product name
-                if (!matchesWine && codeToNameMap[code]) {
-                  for (const name of codeToNameMap[code]) {
-                    if ((variety && (variety.includes(name) || name.includes(variety))) ||
-                        (productName && (productName.includes(name) || name.includes(productName)))) {
-                      matchesWine = true;
-                      break;
-                    }
-                  }
-                }
-              }
-              
-              // Fallback: check with wineTypeFilter if still no match
-              if (!matchesWine && wineTypeFilter) {
-                const filterVariations = [
-                  wineTypeFilter,
-                  wineTypeFilter,
-                  wineTypeFilter.replace(/\s+/g, ''),
-                  wineTypeFilter.toUpperCase(),
-                  wineTypeFilter.toUpperCase()
-                ];
-                
-                for (const filterVar of filterVariations) {
-                  if (productName.includes(filterVar) || 
-                      (variety && variety.includes(filterVar)) ||
-                      wineCode.includes(filterVar)) {
-                    matchesWine = true;
-                    break;
-                  }
-                }
-              }
-              
-              if (!matchesWine && (wineTypeFilter || wineTypeCode)) continue;
-            }
-            
-            filteredStock.push(r);
+        // ✅ NZ only: Channel filter (do NOT apply to AU/USA/IRE/etc.)
+        if (channelFilter) {
+          if (rowCountry === "nzl") {
+            if (!matchesChannel(r, channelFilter)) continue;
           }
+          // else ignore channelFilter for non-NZ rows
+        }
+
+        // Year filter (your existing code unchanged)
+        if (yearFilter) {
+          const recordYear = (r._year || r.Vintage || r.Year || "").toString().trim();
+          let yearMatch = false;
+
+          if (recordYear) {
+            const yearMatch202x = recordYear.match(/20(\d{2})/);
+            const yearMatch2x = recordYear.match(/^(\d{2})$/);
+            if (yearMatch202x) {
+              yearMatch = yearMatch202x[0] === yearFilter || yearMatch202x[1] === yearFilter.slice(-2);
+            } else if (yearMatch2x) {
+              const fullYear = parseInt(yearMatch2x[1], 10) >= 50 ? `19${yearMatch2x[1]}` : `20${yearMatch2x[1]}`;
+              yearMatch = fullYear === yearFilter;
+            } else {
+              yearMatch = recordYear === yearFilter || recordYear.includes(yearFilter);
+            }
+          }
+
+          if (!yearMatch && r.AdditionalAttribute3) {
+            const wineCode = r.AdditionalAttribute3.toString();
+            const yearInCode = wineCode.match(/_(\d{2})_|_(\d{4})_|^(\d{2})|^(\d{4})/);
+            if (yearInCode) {
+              const foundYear = yearInCode[1] || yearInCode[2] || yearInCode[3] || yearInCode[4];
+              if (foundYear) {
+                const fullYear =
+                  foundYear.length === 2
+                    ? (parseInt(foundYear, 10) >= 50 ? `19${foundYear}` : `20${foundYear}`)
+                    : foundYear;
+                yearMatch = fullYear === yearFilter;
+              }
+            }
+          }
+
+          if (!yearMatch) continue;
+        }
+
+        // ✅ USA: state filter
+        if (countryFilter === "usa" && usaStateWant) {
+          const location = String(r.Location || "").trim().toUpperCase();
+          if (location !== usaStateWant) continue;
+        }
+
+        // ✅ AU-B: state filter
+        // Prefer explicit State/AA4 fields via your helper; fallback to Location prefix (e.g. "VIC_customer")
+        if (countryFilter === "au-b" && aubStateWant) {
+          let st = getAubStateFromSalesRow(r); // uses row.State etc.
+          if (!st) {
+            const loc = String(r.Location || "").trim().toUpperCase();
+            const maybe = loc.split("_")[0]; // "VIC" from "VIC_customer"
+            st = normalizeAubState(maybe);
+          }
+          if (!st || st !== aubStateWant) continue;
+        }
+
+        // Distributor filter:
+        // ✅ If AU-B state is selected, ignore distributorFilter (prevents accidental empty results)
+        if (countryFilter !== "usa" && distributorFilter) {
+          if (countryFilter === "au-b" && aubStateWant) {
+            // ignore distributorFilter when AU-B state is active
+          } else {
+            let location = (r.Location || "").toLowerCase().replace(/_/g, " ");
+            let locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s*-\s*/i, "").trim();
+            if (!locationWithoutPrefix || locationWithoutPrefix === location) {
+              locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s+/i, "").trim();
+            }
+            if (!locationWithoutPrefix || locationWithoutPrefix === location) {
+              locationWithoutPrefix = location;
+            }
+
+            const normalizedFilter = distributorFilter.toLowerCase();
+            if (!locationWithoutPrefix.includes(normalizedFilter) && !normalizedFilter.includes(locationWithoutPrefix)) {
+              continue;
+            }
+          }
+        }
+
+        // ---- BRAND FILTER ----
+        if (brandFilter) {
+          if (!matchesBrand(r, brandFilter)) continue;
+        }
+
+        // Wine type filter (your existing code unchanged below here)
+        if (wineTypeFilter || wineTypeCode) {
+          const wineCode = (r.AdditionalAttribute3 || "").toLowerCase();
+          const productName = (r.ProductName || "").toLowerCase();
+
+          let variety = (r.Variety || "").toLowerCase();
+          if (!variety && productName) {
+            const parts = productName.split(/\s+/);
+            if (parts.length > 1) variety = parts.slice(1).join(" ").toLowerCase();
+          }
+          if (!variety && wineCode) {
+            const parts = wineCode.split("_");
+            if (parts.length > 1) variety = parts.slice(1).join(" ").toLowerCase();
+          }
+
+          const codeToNameMap = {
+            sab: ["sauvignon blanc", "sauvignon", "sab"],
+            pin: ["pinot noir", "pin"],
+            chr: ["chardonnay", "chr"],
+            pig: ["pinot gris", "pinot grigio", "pig"],
+            rose: ["rose", "rosé"],
+            gru: ["gruner veltliner", "gruner", "gru"],
+            lhs: ["late harvest sauvignon", "lhs"],
+            ries: ["riesling"],
+          };
+
+          let matchesWine = false;
+
+          if (wineTypeCode) {
+            const code = wineTypeCode.toLowerCase();
+            const codeUpper = code.toUpperCase();
+
+            if (!matchesWine) {
+              matchesWine =
+                wineCode === code ||
+                wineCode === codeUpper ||
+                wineCode.trim() === code ||
+                wineCode.trim() === codeUpper;
+            }
+
+            if (!matchesWine) {
+              matchesWine =
+                wineCode.includes(`_${code}_`) ||
+                wineCode.includes(`_${codeUpper}_`) ||
+                wineCode.startsWith(`${code}_`) ||
+                wineCode.startsWith(`${codeUpper}_`) ||
+                wineCode.endsWith(`_${code}`) ||
+                wineCode.endsWith(`_${codeUpper}`) ||
+                wineCode.indexOf(`_${code}_`) >= 0 ||
+                wineCode.indexOf(`_${codeUpper}_`) >= 0;
+            }
+
+            if (!matchesWine) {
+              const normalizedWineCode = normalizeWineTypeToCode(wineCode.toUpperCase()).toLowerCase();
+              if (normalizedWineCode === code || normalizedWineCode === codeUpper) {
+                matchesWine = true;
+              }
+            }
+
+            if (!matchesWine && codeToNameMap[code]) {
+              for (const name of codeToNameMap[code]) {
+                const variations = [
+                  name,
+                  name.replace(/\s+/g, "_"),   // ✅ underscore variant
+                  name.replace(/\s+/g, ""),    // no-space variant
+                ].map(v => v.toLowerCase());
+
+                for (const v of variations) {
+                  if (wineCode.includes(v)) { matchesWine = true; break; }
+                }
+                if (matchesWine) break;
+              }
+            }
+
+            if (!matchesWine && codeToNameMap[code]) {
+              for (const name of codeToNameMap[code]) {
+                if ((variety && variety.includes(name)) || (productName && productName.includes(name))) {
+                  matchesWine = true;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (!matchesWine && wineTypeFilter) {
+            const f = String(wineTypeFilter).toLowerCase();
+            const filterVariations = [f, f.replace(/\s+/g, "_"), f.replace(/\s+/g, "")];
+
+            for (const fv of filterVariations) {
+              if (productName.includes(fv) || (variety && variety.includes(fv)) || wineCode.includes(fv)) {
+                matchesWine = true;
+                break;
+              }
+            }
+          }
+
+          if (!matchesWine) continue;
+        }
+
+        filteredStock.push(r);
+      }
+
 
           console.groupCollapsed("[SALES] filteredStock summary");
           console.log("countryFilter:", countryFilter);
@@ -1226,278 +1380,273 @@ export default function Dashboard() {
           // ───────── Filter Exports ─────────
           // Only include "waiting to ship" and "in transit" orders (exclude "complete")
           // Optimized filtering with early returns
-          const filteredExports = [];
-          for (let i = 0; i < exportsData.length; i++) {
-            const r = exportsData[i];
-            
-            // Early exit for status check
-            // Check status field first
-            const status = (r.Status || "").toLowerCase().trim();
-            let isActive = status === "waiting to ship" || 
-                          status === "in transit" || 
-                          status.includes("waiting") || 
-                          status.includes("transit");
-            
-            // Also check dates: if DateShipped exists but DateArrival is missing or in the future, it's in transit
-            if (!isActive) {
-              const dateShipped = (r.DateShipped || "").toString().trim();
+         // ───────── Filter Exports ─────────
+        const filteredExports = [];
+
+        // helper: get AU-B state from export row
+        function getAubStateFromExportRow(row) {
+          const raw =
+            row?.State ??
+            row?.state ??
+            row?.["STATE"] ??
+            row?.["State"] ??
+            row?.AdditionalAttribute4 ??
+            row?.AA4_state ??
+            row?._state ??
+            "";
+          return normalizeAubState(raw);
+        }
+
+        for (let i = 0; i < exportsData.length; i++) {
+          const r = exportsData[i];
+
+          // ── Active status logic (your existing code unchanged) ──
+          const status = (r.Status || "").toLowerCase().trim();
+          let isActive =
+            status === "waiting to ship" ||
+            status === "in transit" ||
+            status.includes("waiting") ||
+            status.includes("transit");
+
+          if (!isActive) {
+            const dateShipped = (r.DateShipped || "").toString().trim();
+            const dateArrival = (r.DateArrival || "").toString().trim();
+
+            if (dateShipped && !dateArrival) {
+              isActive = true;
+            } else if (dateShipped && dateArrival) {
+              const shippedDate = parseDate(dateShipped);
+              const arrivalDate = parseDate(dateArrival);
+              if (shippedDate && arrivalDate) {
+                const now = new Date();
+                if (arrivalDate > now) isActive = true;
+              }
+            } else if (dateShipped) {
+              const shippedDate = parseDate(dateShipped);
+              if (shippedDate) {
+                const now = new Date();
+                const daysSinceShipped = Math.ceil((now - shippedDate) / (1000 * 60 * 60 * 24));
+                if (daysSinceShipped >= 0 && daysSinceShipped <= 90) isActive = true;
+              }
+            }
+          }
+
+          if (status === "complete" || status.includes("complete")) isActive = false;
+          if (!isActive) continue;
+
+          // Compute row country once
+          const rawMarket = String(r.AdditionalAttribute2 || r.Market || "").trim();
+          const rowCountry = normalizeCountryCode(rawMarket).toLowerCase();
+
+          // Country filter
+          if (countryFilter) {
+            const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
+            if (rowCountry !== normalizedFilter) continue;
+          }
+
+          // Year filter (your existing code unchanged)
+          if (yearFilter) {
+            let yearMatch = false;
+
+            const dateShipped = (r.DateShipped || "").toString().trim();
+            if (dateShipped) {
+              const dateObj = parseDate(dateShipped);
+              if (dateObj) {
+                const shippedYear = dateObj.getFullYear().toString();
+                const shippedYear2Digit = shippedYear.slice(-2);
+                yearMatch =
+                  shippedYear === yearFilter ||
+                  shippedYear2Digit === yearFilter.slice(-2) ||
+                  shippedYear === `20${yearFilter.slice(-2)}`;
+              }
+            }
+
+            if (!yearMatch) {
               const dateArrival = (r.DateArrival || "").toString().trim();
-              
-              if (dateShipped && !dateArrival) {
-                // Has shipped date but no arrival date = in transit
-                isActive = true;
-              } else if (dateShipped && dateArrival) {
-                // Both dates exist: check if arrival is in the future
-                const shippedDate = parseDate(dateShipped);
-                const arrivalDate = parseDate(dateArrival);
-                if (shippedDate && arrivalDate) {
-                  const now = new Date();
-                  // If arrival date is in the future, it's still in transit
-                  if (arrivalDate > now) {
-                    isActive = true;
-                  }
-                }
-              } else if (dateShipped) {
-                // Only shipped date: check if it's recent (likely in transit)
-                const shippedDate = parseDate(dateShipped);
-                if (shippedDate) {
-                  const now = new Date();
-                  const daysSinceShipped = Math.ceil((now - shippedDate) / (1000 * 60 * 60 * 24));
-                  // If shipped within last 90 days and no arrival date, likely in transit
-                  if (daysSinceShipped >= 0 && daysSinceShipped <= 90) {
-                    isActive = true;
-                  }
-                }
-              }
-            }
-            
-            // Exclude "complete" orders
-            if (status === "complete" || status.includes("complete")) {
-              isActive = false;
-            }
-            
-            if (!isActive) continue;
-            
-            // Early exit for country filter
-            // For exports data, country is now set in AdditionalAttribute2 during normalization
-            if (countryFilter) {
-              const rawMarket = (r.AdditionalAttribute2 || r.Market || "").trim();
-              const recordCountry = normalizeCountryCode(rawMarket).toLowerCase();
-              const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
-              
-              if (recordCountry !== normalizedFilter) continue;
-            }
-            
-            // Early exit for year filter
-            if (yearFilter) {
-              let yearMatch = false;
-              
-              // Priority 1: Check DateShipped field (for exports, this is the primary date field)
-              const dateShipped = (r.DateShipped || "").toString().trim();
-              if (dateShipped) {
-                const dateObj = parseDate(dateShipped);
+              if (dateArrival) {
+                const dateObj = parseDate(dateArrival);
                 if (dateObj) {
-                  const shippedYear = dateObj.getFullYear().toString();
-                  const shippedYear2Digit = shippedYear.slice(-2);
-                  // Match full year or 2-digit year
-                  yearMatch = shippedYear === yearFilter || 
-                             shippedYear2Digit === yearFilter.slice(-2) ||
-                             shippedYear === `20${yearFilter.slice(-2)}`;
+                  const arrivalYear = dateObj.getFullYear().toString();
+                  const arrivalYear2Digit = arrivalYear.slice(-2);
+                  yearMatch =
+                    arrivalYear === yearFilter ||
+                    arrivalYear2Digit === yearFilter.slice(-2) ||
+                    arrivalYear === `20${yearFilter.slice(-2)}`;
                 }
               }
-              
-              // Priority 2: Check DateArrival field if DateShipped didn't match
-              if (!yearMatch) {
-                const dateArrival = (r.DateArrival || "").toString().trim();
-                if (dateArrival) {
-                  const dateObj = parseDate(dateArrival);
-                  if (dateObj) {
-                    const arrivalYear = dateObj.getFullYear().toString();
-                    const arrivalYear2Digit = arrivalYear.slice(-2);
-                    yearMatch = arrivalYear === yearFilter || 
-                               arrivalYear2Digit === yearFilter.slice(-2) ||
-                               arrivalYear === `20${yearFilter.slice(-2)}`;
-                  }
-                }
-              }
-              
-              // Priority 3: Check Vintage, Year fields (fallback)
-              if (!yearMatch) {
-                const recordYear = (r.Vintage || r.Year || "").toString().trim();
-                if (recordYear) {
-                  const yearMatch202x = recordYear.match(/20(\d{2})/);
-                  const yearMatch2x = recordYear.match(/^(\d{2})$/);
-                  if (yearMatch202x) {
-                    yearMatch = yearMatch202x[0] === yearFilter || yearMatch202x[1] === yearFilter.slice(-2);
-                  } else if (yearMatch2x) {
-                    const fullYear = parseInt(yearMatch2x[1]) >= 50 
-                      ? `19${yearMatch2x[1]}` 
-                      : `20${yearMatch2x[1]}`;
-                    yearMatch = fullYear === yearFilter;
-                  } else {
-                    yearMatch = recordYear === yearFilter || recordYear.includes(yearFilter);
-                  }
-                }
-              }
-              
-              // Priority 4: Check if year is in AdditionalAttribute3 (wine code) or Stock field
-              if (!yearMatch) {
-                const wineCode = (r.AdditionalAttribute3 || r.Stock || "").toString();
-                const yearInCode = wineCode.match(/_(\d{2})_|_(\d{4})_|^(\d{2})|^(\d{4})/);
-                if (yearInCode) {
-                  const foundYear = yearInCode[1] || yearInCode[2] || yearInCode[3] || yearInCode[4];
-                  if (foundYear) {
-                    const fullYear = foundYear.length === 2
-                      ? (parseInt(foundYear) >= 50 ? `19${foundYear}` : `20${foundYear}`)
-                      : foundYear;
-                    yearMatch = fullYear === yearFilter;
-                  }
-                }
-              }
-              
-              if (!yearMatch) continue;
             }
-            
-            // Early exit for distributor filter
-            // Strip country code prefix for matching (filter has no prefix)
-            if (distributorFilter) {
+
+            if (!yearMatch) {
+              const recordYear = (r.Vintage || r.Year || "").toString().trim();
+              if (recordYear) {
+                const yearMatch202x = recordYear.match(/20(\d{2})/);
+                const yearMatch2x = recordYear.match(/^(\d{2})$/);
+                if (yearMatch202x) {
+                  yearMatch = yearMatch202x[0] === yearFilter || yearMatch202x[1] === yearFilter.slice(-2);
+                } else if (yearMatch2x) {
+                  const fullYear =
+                    parseInt(yearMatch2x[1], 10) >= 50 ? `19${yearMatch2x[1]}` : `20${yearMatch2x[1]}`;
+                  yearMatch = fullYear === yearFilter;
+                } else {
+                  yearMatch = recordYear === yearFilter || recordYear.includes(yearFilter);
+                }
+              }
+            }
+
+            if (!yearMatch) {
+              const wineCode = (r.AdditionalAttribute3 || r.Stock || "").toString();
+              const yearInCode = wineCode.match(/_(\d{2})_|_(\d{4})_|^(\d{2})|^(\d{4})/);
+              if (yearInCode) {
+                const foundYear = yearInCode[1] || yearInCode[2] || yearInCode[3] || yearInCode[4];
+                if (foundYear) {
+                  const fullYear =
+                    foundYear.length === 2
+                      ? (parseInt(foundYear, 10) >= 50 ? `19${foundYear}` : `20${foundYear}`)
+                      : foundYear;
+                  yearMatch = fullYear === yearFilter;
+                }
+              }
+            }
+
+            if (!yearMatch) continue;
+          }
+
+          // ✅ USA state filter (if exports have state in a field; otherwise this will just skip nothing)
+          if (countryFilter === "usa" && usaStateWant) {
+            const st =
+              String(
+                r.State ??
+                  r.state ??
+                  r["STATE"] ??
+                  r["State"] ??
+                  r.AdditionalAttribute4 ??
+                  ""
+              )
+                .trim()
+                .toUpperCase();
+
+            // only apply if we actually have a state on the row
+            if (st && st !== usaStateWant) continue;
+          }
+
+          // ✅ AU-B state filter (this is the important one)
+          if (countryFilter === "au-b" && aubStateWant) {
+            const st = getAubStateFromExportRow(r);
+            if (!st || st !== aubStateWant) continue;
+          }
+
+          // Distributor filter
+          // ✅ Skip distributorFilter when AU-B state is active (prevents accidental empty results)
+          if (distributorFilter) {
+            if (countryFilter === "au-b" && aubStateWant) {
+              // ignore distributorFilter
+            } else {
               let customer = (r.Customer || r.Company || "").toLowerCase();
-              // Strip country code prefix - handles both "nzl - customer" and "nzl customer" formats
               let customerWithoutPrefix = customer.replace(/^[a-z]{2,3}\s*-\s*/i, "").trim();
               if (!customerWithoutPrefix || customerWithoutPrefix === customer) {
                 customerWithoutPrefix = customer.replace(/^[a-z]{2,3}\s+/i, "").trim();
               }
               const normalizedFilter = distributorFilter.toLowerCase();
-              
-              // Match against customer without prefix (filter has no prefix)
-              if (!customerWithoutPrefix.includes(normalizedFilter) &&
-                  !normalizedFilter.includes(customerWithoutPrefix)) {
+              if (
+                !customerWithoutPrefix.includes(normalizedFilter) &&
+                !normalizedFilter.includes(customerWithoutPrefix)
+              ) {
                 continue;
               }
             }
-            
-            // Early exit for wine type filter
-            if (wineTypeFilter || wineTypeCode) {
-              const varietyCode = (r.VarietyCode || r.Stock || r.AdditionalAttribute3 || "").toLowerCase();
-              let variety = (r.Variety || "").toLowerCase();
-              const productName = (r.ProductName || r.Stock || "").toLowerCase();
-              
-              // Extract variety from ProductName if Variety field doesn't exist (e.g., NZL data)
-              if (!variety && productName) {
-                const parts = productName.split(/\s+/);
-                if (parts.length > 1) {
-                  variety = parts.slice(1).join(' ').toLowerCase();
-                }
+          }
+
+          // Wine type filter (your existing logic unchanged)
+          if (wineTypeFilter || wineTypeCode) {
+            const varietyCode = (r.VarietyCode || r.Stock || r.AdditionalAttribute3 || "").toLowerCase();
+            let variety = (r.Variety || "").toLowerCase();
+            const productName = (r.ProductName || r.Stock || "").toLowerCase();
+
+            if (!variety && productName) {
+              const parts = productName.split(/\s+/);
+              if (parts.length > 1) variety = parts.slice(1).join(" ").toLowerCase();
+            }
+
+            if (!variety && varietyCode) {
+              const parts = varietyCode.split("_");
+              if (parts.length > 1) variety = parts.slice(1).join(" ").toLowerCase();
+            }
+
+            const codeToNameMap = {
+              sab: ["sauvignon blanc", "sauvignon", "sab"],
+              pin: ["pinot noir", "pin"],
+              chr: ["chardonnay", "chr"],
+              pig: ["pinot gris", "pinot grigio", "pig"],
+              rose: ["rose", "rosé"],
+              gru: ["gruner veltliner", "gruner", "gru"],
+              lhs: ["late harvest sauvignon", "lhs"],
+              ries: ["riesling"],
+            };
+
+            let matchesWine = false;
+
+            if (wineTypeCode) {
+              const code = wineTypeCode.toLowerCase();
+              const codeUpper = code.toUpperCase();
+
+              if (!matchesWine) {
+                matchesWine =
+                  varietyCode.includes(`_${code}_`) ||
+                  varietyCode.includes(`_${codeUpper}_`) ||
+                  varietyCode.startsWith(`${code}_`) ||
+                  varietyCode.startsWith(`${codeUpper}_`) ||
+                  varietyCode.endsWith(`_${code}`) ||
+                  varietyCode.endsWith(`_${codeUpper}`) ||
+                  varietyCode === code ||
+                  varietyCode === codeUpper ||
+                  varietyCode.indexOf(`_${code}_`) >= 0 ||
+                  varietyCode.indexOf(`_${codeUpper}_`) >= 0;
               }
-              
-              // Also extract variety from wine code if it's in format "BRAND_VARIETY" (NZL format)
-              if (!variety && varietyCode) {
-                const parts = varietyCode.split('_');
-                if (parts.length > 1) {
-                  // Skip first part (brand) and join the rest as variety
-                  variety = parts.slice(1).join(' ').toLowerCase();
-                }
-              }
-              
-              // Map wine type codes (from filter) to their full names for matching in AdditionalAttribute3
-              const codeToNameMap = {
-                'sab': ['sauvignon blanc', 'sauvignon', 'sab'],
-                'pin': ['pinot noir', 'pin'],
-                'chr': ['chardonnay', 'chr'],
-                'pig': ['pinot gris', 'pinot grigio', 'pig'],
-                'rose': ['rose', 'rosé'], // Include accented version
-                'gru': ['gruner veltliner', 'gruner', 'gru'],
-                'lhs': ['late harvest sauvignon', 'lhs'],
-                'ries': ['riesling']
-              };
-              
-              let matchesWine = false;
-              
-              if (wineTypeCode) {
-                const code = wineTypeCode.toLowerCase();
-                const codeUpper = code.toUpperCase();
-                
-                // PRIORITY 1: Check for variety code directly (e.g., PIG, PIN, ROSE)
-                if (!matchesWine) {
-                  matchesWine = varietyCode.includes(`_${code}_`) || 
-                              varietyCode.includes(`_${codeUpper}_`) ||
-                              varietyCode.startsWith(`${code}_`) || 
-                              varietyCode.startsWith(`${codeUpper}_`) ||
-                              varietyCode.endsWith(`_${code}`) ||
-                              varietyCode.endsWith(`_${codeUpper}`) ||
-                              varietyCode === code ||
-                              varietyCode === codeUpper ||
-                              varietyCode.indexOf(`_${code}_`) >= 0 ||
-                              varietyCode.indexOf(`_${codeUpper}_`) >= 0;
-                }
-                
-                // PRIORITY 2: Check AdditionalAttribute3 (varietyCode) for full variety names
-                if (!matchesWine && codeToNameMap[code]) {
-                  for (const name of codeToNameMap[code]) {
-                    // Create all possible variations
-                    const variations = [
-                      name,
-                      name,
-                      name.replace(/\s+/g, ''),
-                      name.toUpperCase(),
-                      name.toUpperCase(),
-                      name.toUpperCase().replace(/\s+/g, '')
-                    ];
-                    
-                    // Check if varietyCode contains any variation
-                    for (const variation of variations) {
-                      if (varietyCode.includes(variation)) {
-                        matchesWine = true;
-                        break;
-                      }
-                    }
-                    if (matchesWine) break;
+
+              if (!matchesWine && codeToNameMap[code]) {
+                for (const name of codeToNameMap[code]) {
+                  const variations = [name, name.replace(/\s+/g, "_"), name.replace(/\s+/g, "")]
+                    .map(v => v.toLowerCase());
+                  for (const v of variations) {
+                    if (varietyCode.includes(v)) { matchesWine = true; break; }
                   }
-                }
-                
-                // PRIORITY 3: Check extracted variety and product name
-                if (!matchesWine && codeToNameMap[code]) {
-                  for (const name of codeToNameMap[code]) {
-                    if ((variety && (variety.includes(name) || name.includes(variety))) ||
-                        (productName && (productName.includes(name) || name.includes(productName)))) {
-                      matchesWine = true;
-                      break;
-                    }
-                  }
+                  if (matchesWine) break;
                 }
               }
-              
-              if (!matchesWine && wineTypeFilter) {
-                const filterVariations = [
-                  wineTypeFilter,
-                  wineTypeFilter,
-                  wineTypeFilter.replace(/\s+/g, ''),
-                  wineTypeFilter.toUpperCase(),
-                  wineTypeFilter.toUpperCase()
-                ];
-                
-                for (const filterVar of filterVariations) {
-                  if ((variety && variety.includes(filterVar)) || 
-                      productName.includes(filterVar) ||
-                      varietyCode.includes(filterVar)) {
+
+              if (!matchesWine && codeToNameMap[code]) {
+                for (const name of codeToNameMap[code]) {
+                  if ((variety && (variety.includes(name) || name.includes(variety))) ||
+                      (productName && (productName.includes(name) || name.includes(productName)))) {
                     matchesWine = true;
                     break;
                   }
                 }
               }
-              
-              if (!matchesWine) continue;
             }
 
-
-            if (brandFilter) {
-              if (!matchesBrand(r, brandFilter)) continue;
+            if (!matchesWine && wineTypeFilter) {
+              const f = String(wineTypeFilter).toLowerCase();
+              const filterVariations = [f, f.replace(/\s+/g, "_"), f.replace(/\s+/g, "")];
+              for (const fv of filterVariations) {
+                if ((variety && variety.includes(fv)) || productName.includes(fv) || varietyCode.includes(fv)) {
+                  matchesWine = true;
+                  break;
+                }
+              }
             }
-            
 
-            
-            filteredExports.push(r);
+            if (!matchesWine) continue;
           }
+
+          // Brand filter (your existing logic)
+          if (brandFilter) {
+            if (!matchesBrand(r, brandFilter)) continue;
+          }
+
+          filteredExports.push(r);
+        }
+
 
           // ───────── Stock & Exports Aggregation by Distributor and Wine ─────────
           // Use distributor stock on hand data (filteredDistributorStockOnHand) for actual stock
@@ -1836,30 +1985,63 @@ export default function Dashboard() {
         // Create a separate aggregation for warehouse predictions
         const warehouseSalesByPeriod = new Map(); // key: `${year}_${normalizedMonth}` (for warehouse predictions - all wine types)
         
-        // Create unfiltered sales data for warehouse predictions (only filter by country/state, not wine type)
-        const warehouseSalesData = [];
-        for (let i = 0; i < salesData.length; i++) {
-          const r = salesData[i];
-          
-          // Filter by country only (not wine type for warehouse predictions)
-          if (countryFilter) {
-            const rawCountryCode = (r.AdditionalAttribute2 || "");
-            const countryCode = normalizeCountryCode(rawCountryCode).toLowerCase();
-            const normalizedFilter = normalizeCountryCode(countryFilter).toLowerCase();
-            if (countryCode !== normalizedFilter) continue;
-          }
-          
-          // Filter by state for USA
-          if (countryFilter === 'usa' && stateFilter) {
-            const location = (r.Location || "").trim();
-            if (location !== stateFilter) {
-              continue;
-            }
-          }
-          
-          // Filter by distributor for non-USA (but not wine type)
-          if (countryFilter !== 'usa' && distributorFilter) {
-            let location = (r.Location || "").toLowerCase().replace(/_/g, " ");
+       // Create unfiltered sales data for warehouse predictions
+      // (only filter by country/state/distributor — NOT wine type)
+      const warehouseSalesData = [];
+
+      // AU-B state from sales row (use what you already wrote if you have it)
+      function getAubStateFromSalesRowLocal(row) {
+        const raw =
+          row?.State ??
+          row?.state ??
+          row?.["STATE"] ??
+          row?.["State"] ??
+          row?.AdditionalAttribute4 ??
+          row?.AA4_state ??
+          row?._state ??
+          "";
+        return normalizeAubState(raw);
+      }
+
+      for (let i = 0; i < salesData.length; i++) {
+        const r = salesData[i];
+
+        // ── Country filter (robust: checks AA2/Market/Country/MarketCode/_sheetName) ──
+        if (countryFilter) {
+          const rawCountryCode = String(
+            r.AdditionalAttribute2 ||
+              r.Market ||
+              r.Country ||
+              r.MarketCode ||
+              r._sheetName ||
+              ""
+          ).trim();
+
+          const rowCountry = normalizeCountryCode(rawCountryCode).toLowerCase();
+          const wantCountry = normalizeCountryCode(countryFilter).toLowerCase();
+          if (rowCountry !== wantCountry) continue;
+        }
+
+        // ── USA state filter (uses Location) ──
+        if (countryFilter === "usa" && usaStateWant) {
+          const location = String(r.Location || "").trim().toUpperCase();
+          if (location !== usaStateWant) continue;
+        }
+
+        // ── AU-B state filter (uses State / AA4) ──
+        if (countryFilter === "au-b" && aubStateWant) {
+          const st = getAubStateFromSalesRowLocal(r);
+          if (!st || st !== aubStateWant) continue;
+        }
+
+        // ── Distributor filter for non-USA ──
+        // ✅ If AU-B state is selected, ignore distributorFilter to avoid empty results
+        if (countryFilter !== "usa" && distributorFilter) {
+          if (countryFilter === "au-b" && aubStateWant) {
+            // ignore distributorFilter
+          } else {
+            let location = String(r.Location || "").toLowerCase().replace(/_/g, " ");
+
             let locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s*-\s*/i, "").trim();
             if (!locationWithoutPrefix || locationWithoutPrefix === location) {
               locationWithoutPrefix = location.replace(/^[a-z]{2,3}\s+/i, "").trim();
@@ -1867,16 +2049,18 @@ export default function Dashboard() {
             if (!locationWithoutPrefix || locationWithoutPrefix === location) {
               locationWithoutPrefix = location;
             }
-            const normalizedFilter = distributorFilter.toLowerCase();
-            if (!locationWithoutPrefix.includes(normalizedFilter) &&
-                !normalizedFilter.includes(locationWithoutPrefix)) {
+
+            const want = String(distributorFilter).toLowerCase();
+            if (!locationWithoutPrefix.includes(want) && !want.includes(locationWithoutPrefix)) {
               continue;
             }
           }
-          
-          warehouseSalesData.push(r);
         }
-        
+
+        warehouseSalesData.push(r);
+      }
+
+         
         // Aggregate warehouse sales data (all wine types) by period
         for (let i = 0; i < warehouseSalesData.length; i++) {
           const r = warehouseSalesData[i];

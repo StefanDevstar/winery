@@ -932,42 +932,74 @@ function parseNZLSheet(records) {
  * Parses AU-B sheet - Transaction-level sales data
  * Structure: Wine Name, Quantity - Cartons, Customer/Project, State, etc.
  */
-function parseAUBSheet(records) {
-  // First filter out completely empty records
-  const filteredRecords = records.filter(r => {
-    if (!r || typeof r !== 'object') return false;
-    return Object.values(r).some(v => v !== null && v !== undefined && String(v).trim() !== '');
-  });
-  
+function parseAUBSheet(records, sheetName = "AU-B") {
+  const filteredRecords = (records || []).filter(r =>
+    r && typeof r === "object" &&
+    Object.values(r).some(v => v != null && String(v).trim() !== "")
+  );
+
   return filteredRecords
-    .filter(r => r['Wine Name'] && r['Quantity - Cartons'])
+    .filter(r => r["Wine Name"] && r["Quantity - Cartons"])
     .map(r => {
-      const wineName = String(r['Wine Name'] || '').trim();
-      const quantity = parseFloat(String(r['Quantity - Cartons'] || '0').replace(/,/g, '')) || 0;
-      const customer = String(r['Customer/Project'] || '').trim();
-      const state = String(r.State || '').trim();
-      const month = String(r.Month || '').trim();
-      const year = String(r.Year || '').trim();
-      
-      // Extract brand/variety from wine name
-      const parts = wineName.split(/\s+/);
-      const brand = parts[0] || '';
-      const variety = parts.slice(1).join(' ') || '';
-      
+      const wineName = String(r["Wine Name"] || "").trim();
+      const quantity =
+        parseFloat(String(r["Quantity - Cartons"] || "0").replace(/,/g, "")) || 0;
+
+      const customer = String(r["Customer/Project"] || "").trim();
+      const rawState = String(r.State || r.state || "").trim(); // whatever is in the file
+      const month = String(r.Month || "").trim();
+      const year = String(r.Year || "").trim();
+
+      // ✅ normalize AU state code for filtering (NSW/VIC/QLD/...)
+      const stateNorm = typeof normalizeAusState === "function"
+        ? normalizeAusState(rawState)
+        : rawState.toUpperCase();
+
+      // ✅ wine type code (SAB/PIN/PIG/etc)
+      const wineTypeCode = normalizeWineTypeToCode(wineName);
+
+      // ✅ brand for filtering (jtw/tbh/otq)
+      const brandCanon = normalizeBrandToCode(wineName); // "JT" | "TBH" | "OTQ" | ""
+      const brandForFilter =
+        brandCanon === "JT" ? "jtw" :
+        brandCanon === "TBH" ? "tbh" :
+        brandCanon === "OTQ" ? "otq" :
+        brandCanon ? brandCanon.toLowerCase() :
+        "";
+
+      const brandDisplay = BRAND_NAME_MAP?.[brandCanon] || "";
+
+      // keep your current Location format: "STATE_customer"
+      const location = rawState
+        ? `${rawState}_${customer}`.substring(0, 50)
+        : customer.substring(0, 50);
+
       return {
-        AdditionalAttribute2: 'au-b', // Preserve AU-B as separate country code
-        AdditionalAttribute3: normalizeWineTypeToCode(variety || wineName), // Wine code (SAB, PIN, etc.)
-        ProductName: wineName, // Product name
-        Location: state ? `${state}_${customer}`.substring(0, 50) : customer.substring(0, 50), // Location (State_Customer)
-        Available: quantity, // Quantity sold (depletion)
+        AdditionalAttribute2: "au-b",
+        AdditionalAttribute3: wineTypeCode,
+
+        ProductName: wineName,
+        Location: location,
+        Available: quantity,
+
+        // ✅ state fields for dropdown/filter
+        State: stateNorm || null,
+        AdditionalAttribute4: stateNorm || null,
+        _state: stateNorm || null,
+
+        // ✅ brand fields so brand filtering stays consistent
+        Brand: brandDisplay || null,
+        BrandCode: brandForFilter || null,
+
         _month: month,
         _year: year,
         _customer: customer,
-        _sheetName: 'AU-B'
+        _sheetName: sheetName,
       };
     })
-    .filter(record => !isEmptyRecord(record)); // Filter empty records
+    .filter(record => !isEmptyRecord(record));
 }
+
 
 /**
  * Parses USA sheet - Monthly sales by State and Wine
