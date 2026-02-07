@@ -1902,6 +1902,12 @@ export function normalizeWarehouseStockData(records, sheetName = '') {
  * - Keeps legacy behavior for NZ / USA / AU-B / IRE / other sheets
  * - Adds AU-C "pivot" support (multiple DC/state columns) WITHOUT breaking Brand filtering
  */
+/**
+ * Normalize Distributor Stock On Hand data (DSOH)
+ * - Keeps legacy behavior for NZ / USA / AU-B / IRE / other sheets
+ * - Adds AU-C "pivot" support (multiple DC/state columns) WITHOUT breaking Brand filtering
+ * - ✅ NZ ONLY: if Pack column exists and is 6, converts OnHand to 12pk units by dividing by 2
+ */
 export function normalizeDistributorStockOnHandData(records, sheetName = "") {
   if (!Array.isArray(records) || records.length === 0) return [];
 
@@ -1923,11 +1929,79 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
   const headerKeys = Object.keys(firstRecord);
 
   // ---------- helpers ----------
+    // ---------- NZ Pack detection (robust) ----------
+    const detectNZPackCol = ({
+      records,
+      headerKeys,
+      findColumn,
+      productCol,
+      skuCol,
+      countryCol,
+      wineTypeCol,
+      onHandCol,
+    }) => {
+      // 1) Best case: Pack is actually a key
+      let col = findColumn(["Pack", "PACK", "Pk", "PK", "Pack Size", "Case Size", "CaseSize"]);
+      if (col) return col;
+  
+      // 2) Header row might be VALUES (keys are Column_1, Column_2, ...)
+      const headerRow =
+        records.slice(0, 15).find(r =>
+          r && typeof r === "object" &&
+          Object.values(r).some(v => String(v || "").toUpperCase().includes("PACK"))
+        ) || null;
+  
+      if (headerRow) {
+        const k = Object.keys(headerRow).find(k =>
+          String(headerRow[k] || "").toUpperCase().includes("PACK")
+        );
+        if (k) return k;
+      }
+  
+      // 3) Heuristic: pick the column (excluding known ones) that looks like mostly 6/12
+      let bestKey = null;
+      let bestScore = 0;
+  
+      for (const k of headerKeys) {
+        if (
+          k === productCol ||
+          k === skuCol ||
+          k === countryCol ||
+          k === wineTypeCol ||
+          k === onHandCol
+        ) continue;
+  
+        let seen = 0;
+        let hits = 0;
+  
+        for (let i = 0; i < Math.min(records.length, 60); i++) {
+          const v = records[i]?.[k];
+          if (v == null || String(v).trim() === "") continue;
+  
+          seen++;
+          const s = String(v).trim().toUpperCase();
+          if (s === "6" || s === "12" || s.includes("6") || s.includes("12")) {
+            // keep it strict-ish: only count if it's basically "6" or "12" (or "6PK"/"12PK")
+            const n = parseInt(s.replace(/[^\d]/g, ""), 10);
+            if (n === 6 || n === 12) hits++;
+          }
+        }
+  
+        const score = seen ? hits / seen : 0;
+        if (hits >= 6 && score > bestScore) {
+          bestScore = score;
+          bestKey = k;
+        }
+      }
+  
+      return bestKey;
+    };
+  
   const parseNumericValue = (value) => {
     if (value === undefined || value === null || value === "") return 0;
     const cleaned = String(value)
-      .replace(/[$€£¥,]/g, "")     // remove currency + commas
-      .replace(/[^\d.-]/g, "")     // keep digits/.- only
+      .replace(/[$€£¥,]/g, "")
+      .replace(/[^\d.-]/g, "")
       .trim();
     const parsed = cleaned !== "" && !isNaN(cleaned) ? parseFloat(cleaned) : 0;
     return Number.isFinite(parsed) ? parsed : 0;
@@ -1954,8 +2028,6 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
     return null;
   };
 
-  
-
   const extractStateFromDCLabel = (s) => {
     const m = String(s || "").toUpperCase().match(/\b(NSW|VIC|QLD|SA|WA)\b/);
     return m ? m[1] : "";
@@ -1976,13 +2048,10 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
     looksLikeAUCByHeaders;
 
   if (isAUC) {
-    // AU-C format often looks like:
-    // Item | NSW | VIC | QLD | SA | WA  (or "Sydney DC (NSW)" etc)
     const itemCol =
       findColumn(["Item", "Product", "Description", "Product Description", "Wine", "Wine Name"]) ||
       headerKeys[0];
 
-    // pick columns that represent DC/state buckets
     const dcCols = headerKeys
       .filter((k) => k !== itemCol)
       .filter((k) => {
@@ -1997,7 +2066,6 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
       const item = String(row[itemCol] ?? "").trim();
       if (!item) continue;
 
-      // skip obvious subheader rows (these appear in some AU-C exports)
       const upperItem = item.toUpperCase();
       if (
         upperItem.includes("CURRENT QUANTITY") ||
@@ -2007,10 +2075,8 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
         continue;
       }
 
-      // Parse SKU/components from the item text so Brand filtering still works
       const skuParts = parseProductSKU(item);
 
-      // Derive wine type code (SAB/PIN/etc) similar to old flow
       let wineTypeCode = normalizeWineTypeToCode(item);
       if (!wineTypeCode || wineTypeCode.length > 10) {
         wineTypeCode = normalizeWineTypeToCode(skuParts.varietyCode || skuParts.fullSKU || item);
@@ -2033,24 +2099,19 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
 
       for (const c of dcCols) {
         const onHand = parseNumericValue(row[c]);
-
-        // keep dataset clean (pivot sheets can have tons of zeros)
         if (!(onHand > 0)) continue;
 
         const state = extractStateFromDCLabel(c) || String(c || "").trim();
-
         const normMarket = normalizeCountryCode("AU-C");
 
         normalized.push({
           Location: state,
           Distributor: distributorName,
 
-          // product fields (keep useful text for brand parsing fallbacks)
           Product: item,
           ProductName: item,
           Code: skuParts.fullSKU || item,
 
-          // ✅ brand fields populated so brand filtering works
           Brand: skuParts.brand,
           BrandCode: skuParts.brandCode,
           Vintage: skuParts.vintage,
@@ -2114,7 +2175,23 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
   let onHandCol = null;
   let wineTypeCol = null;
 
-  if (upperSheetName === "NZ" || upperSheetName === "NZL" || sheetName.includes("NZ")) {
+  const isNZ = upperSheetName === "NZ" || upperSheetName === "NZL" || sheetName.includes("NZ");
+  // Detect pack col only for NZ DSOH
+  const packCol = isNZ
+    ? detectNZPackCol({
+        records,
+        headerKeys,
+        findColumn,
+        productCol,
+        skuCol,
+        countryCol,
+        wineTypeCol,
+        onHandCol,
+      })
+    : null;
+
+
+  if (isNZ) {
     if (headerKeys.length > 5) {
       wineTypeCol = headerKeys[1];
       onHandCol = headerKeys[4];
@@ -2183,7 +2260,37 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
 
     if (!product && !sku) continue;
 
-    const onHand = onHandCol ? parseNumericValue(row[onHandCol]) : 0;
+    const onHandRaw = onHandCol ? parseNumericValue(row[onHandCol]) : 0;
+
+    let onHand = onHandRaw;
+
+    // ✅ NZ only: convert 6-pack to 12-pack units
+    if (isNZ && packCol) {
+      const packRaw = row?.[packCol];
+      const packNum = parseInt(String(packRaw ?? "").replace(/[^\d]/g, ""), 10);
+
+      if (packNum === 6) onHand = onHandRaw / 2;
+      else if (packNum === 12) onHand = onHandRaw;
+
+      // DEBUG sample
+      if (i < 20) {
+        console.log("[NZ SOH PACK]", {
+          i,
+          packCol,
+          packRaw,
+          packNum,
+          onHand_raw: onHandRaw,
+          onHand_12pk: onHand,
+        });
+      }
+    } else if (isNZ && !packCol && i < 3) {
+      console.warn("[NZ SOH PACK] cannot convert (no packCol)", {
+        i,
+        onHand_raw: onHandRaw,
+      });
+    }
+
+
     const wineType = wineTypeCol ? String(row[wineTypeCol] || "").trim() : "";
 
     // USA: state from 2nd column index 1 (legacy)
