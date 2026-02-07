@@ -11,6 +11,8 @@ import DistributorMap from "../components/dashboard/DistributorMap";
 import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
+import { summarizeWarehouseMagnumAndCS } from "@/lib/utils";
+
 
 const DEBUG_TRANSIT = true;
 
@@ -477,6 +479,51 @@ function parseDate(dateStr) {
 }
 
 export default function Dashboard() {
+
+  // ✅ Warehouse stock rows (aggregated from localStorage, same pattern as your projection code)
+const warehouseStockRows = React.useMemo(() => {
+  let rows = [];
+
+  try {
+    // If you store a single combined key somewhere, use it here first (optional)
+    const direct = localStorage.getItem("vc_warehouse_stock_data");
+    if (direct) {
+      const parsed = JSON.parse(direct);
+      if (Array.isArray(parsed)) rows = parsed;
+    }
+
+    // Otherwise aggregate per-sheet keys using metadata (this matches your projection logic)
+    if (rows.length === 0) {
+      const metaRaw = localStorage.getItem("vc_warehouse_stock_metadata");
+      if (metaRaw) {
+        const meta = JSON.parse(metaRaw);
+        const sheetNames = Array.isArray(meta?.sheetNames) ? meta.sheetNames : [];
+
+        for (const sn of sheetNames) {
+          const key = `vc_warehouse_stock_data_${sn}`;
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
+
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) rows.push(...parsed);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[Dashboard] failed to read warehouse stock from localStorage:", err);
+  }
+
+  console.log("[Dashboard] warehouseStockRows:", rows.length, rows[0]);
+  return rows;
+}, []); // if you have a refreshKey/state, add it in deps
+
+const magnumCsTable = React.useMemo(() => {
+  const out = summarizeWarehouseMagnumAndCS(warehouseStockRows);
+  console.log("[Dashboard] magnumCsTable:", out);
+  return out;
+}, [warehouseStockRows]);
+
+  
   const [filters, setFilters] = useState({
     country: "usa", // Default to New Zealand (first in the list)
     distributor: "all",
@@ -3749,6 +3796,8 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
     atRiskPrev = 0,
   } = kpiValues;
 
+  
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-white p-3 sm:p-4 md:p-6">
       <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6">
@@ -3757,6 +3806,8 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
             <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
             <span className="hidden sm:inline">Processing data...</span>
             <span className="sm:hidden">Processing...</span>
+
+            
           </div>
         )}
         <FilterBar filters={filters} onFilterChange={handleFilterChange} />
@@ -3809,13 +3860,47 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
             <ForecastAccuracyChart data={forecastAccuracyData} />
             <WarehouseStockProjectionChart data={warehouseStockProjection} />
           </div>
+
           <div className="lg:col-span-1">
             <AlertsFeed alerts={alerts} />
           </div>
         </div>
 
+        {/* ✅ Put the table HERE (outside the chart grid, before DistributorMap) */}
+        {Array.isArray(magnumCsTable) && magnumCsTable.length > 0 && (
+          <div className="mt-4 rounded-xl border bg-white p-4">
+            <div className="text-sm font-semibold mb-3">
+              Warehouse: Magnum & C/S (12pk units)
+            </div>
+
+            <div className="overflow-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b">
+                    <th className="text-left py-2 pr-3">Wine</th>
+                    <th className="text-right py-2 px-3">C/S (12pk)</th>
+                    <th className="text-right py-2 px-3">Magnum (12pk)</th>
+                    <th className="text-right py-2 pl-3">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {magnumCsTable.map((r) => (
+                    <tr key={r.wine} className="border-b last:border-0">
+                      <td className="py-2 pr-3 font-medium">{r.wine}</td>
+                      <td className="py-2 px-3 text-right">{r.cs_12pk}</td>
+                      <td className="py-2 px-3 text-right">{r.magnum_12pk}</td>
+                      <td className="py-2 pl-3 text-right">{r.total_12pk}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         <DistributorMap distributors={distributors} />
-      </div>
+
+    </div>
 
       <DrilldownModal
         isOpen={!!selectedKPI}

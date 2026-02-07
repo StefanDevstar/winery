@@ -7,6 +7,120 @@ export function cn(...inputs) {
   return twMerge(clsx(inputs))
 }
 
+// Detect "6pk" or "12pk" inside the client description string
+function detectPkFromDesc(desc) {
+  const s = String(desc || "").toLowerCase();
+  if (/\b6pk\b/.test(s)) return 6;
+  if (/\b12pk\b/.test(s)) return 12;
+  return null;
+}
+
+// Convert qty into 12pk units (6pk counts as half)
+function to12pkUnits(qty, pk) {
+  const n = Number(qty || 0);
+  if (!Number.isFinite(n)) return 0;
+  if (pk === 6) return n / 2;
+  return n; // 12pk or unknown -> treat as-is
+}
+
+// Make a stable key like "JT 25 SAB NZ" by removing MAGNUM/C/S/6pk/12pk
+function normalizeMagnumCsKey(desc) {
+  return String(desc || "")
+    .toUpperCase()
+    .replace(/\bMAGNUM\b/g, "")
+    .replace(/\bC\/S\b/g, "")
+    .replace(/\b6PK\b/g, "")
+    .replace(/\b12PK\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Pick a sensible qty field from a warehouse row
+function getWarehouseQty(row) {
+  // Priority: Available -> OnHand -> StockOnHand -> anything numeric-ish
+  const candidates = [
+    row?.Available,
+    row?.OnHand,
+    row?.StockOnHand,
+    row?.["On Hand"],
+    row?.Quantity,
+    row?.Qty,
+  ];
+
+  for (const v of candidates) {
+    const n = Number(String(v ?? "").replace(/,/g, ""));
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
+/**
+ * Summarize warehouse rows into a small table:
+ * WineKey | cs_12pk | magnum_12pk
+ *
+ * Uses getWarehouseClientDescription(row) to find the descriptor string.
+ * Uses 6pk/12pk inside descriptor to convert into 12pk units.
+ */
+export function summarizeWarehouseMagnumAndCS(warehouseRows, { debug = false } = {}) {
+  const map = new Map();
+
+  for (let i = 0; i < (warehouseRows || []).length; i++) {
+    const row = warehouseRows[i];
+    if (!row) continue;
+
+    const desc = getWarehouseClientDescription(row) || "";
+    if (!desc) continue;
+
+    const u = desc.toUpperCase();
+    const isMagnum = /\bMAGNUM\b/.test(u);
+    const isCS = /\bC\/S\b/.test(u);
+
+    // only care about these special packs
+    if (!isMagnum && !isCS) continue;
+
+    const qtyRaw = getWarehouseQty(row);
+    const pk = detectPkFromDesc(desc);
+    const qty12pk = to12pkUnits(qtyRaw, pk);
+
+    const key = normalizeMagnumCsKey(desc) || u.trim();
+    if (!map.has(key)) {
+      map.set(key, { wine: key, cs_12pk: 0, magnum_12pk: 0 });
+    }
+
+    const agg = map.get(key);
+    if (isCS) agg.cs_12pk += qty12pk;
+    if (isMagnum) agg.magnum_12pk += qty12pk;
+
+    if (debug && i < 25) {
+      console.log("[WH MAGNUM/CS LINE]", {
+        i,
+        desc,
+        key,
+        isCS,
+        isMagnum,
+        qtyRaw,
+        pk,
+        qty12pk,
+      });
+    }
+  }
+
+  const out = Array.from(map.values())
+    .map(r => ({
+      ...r,
+      cs_12pk: Math.round(r.cs_12pk * 100) / 100,
+      magnum_12pk: Math.round(r.magnum_12pk * 100) / 100,
+      total_12pk: Math.round((r.cs_12pk + r.magnum_12pk) * 100) / 100,
+    }))
+    .sort((a, b) => b.total_12pk - a.total_12pk);
+
+  if (debug) {
+    console.log("[WH MAGNUM/CS TABLE]");
+    console.table(out);
+  }
+
+  return out;
+}
 
 
 const PK_RE = /\b(6|12)\s*(pk|pck)\b/i;
