@@ -12,6 +12,25 @@ import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
 
+const DEBUG_TRANSIT = true;
+
+const tlog = (...args) => DEBUG_TRANSIT && console.log(...args);
+
+const tgroup = (label) => DEBUG_TRANSIT && console.groupCollapsed(label);
+const tgroupEnd = () => DEBUG_TRANSIT && console.groupEnd();
+
+function pick(obj, keys) {
+  const out = {};
+  for (const k of keys) out[k] = obj?.[k];
+  return out;
+}
+
+function findKeysLike(rows, pattern) {
+  const r0 = rows?.[0] || {};
+  return Object.keys(r0).filter(k => pattern.test(k));
+}
+
+
 // ───────── AU-B state helpers ─────────
 function inferAUBStateFromDistributorHeader(v) {
   const s = String(v || "").toUpperCase();
@@ -567,6 +586,39 @@ export default function Dashboard() {
               }
             }
           }
+
+          tgroup("🚚 [TRANSIT] RAW exportsData snapshot");
+
+          tlog("[RAW exportsData] rows:", Array.isArray(exportsData) ? exportsData.length : exportsData);
+
+          if (Array.isArray(exportsData) && exportsData.length) {
+            const r0 = exportsData[0];
+            tlog("[RAW exportsData] first row keys:", Object.keys(r0));
+            
+            // Find any transit-ish columns automatically
+            const transitCols = findKeysLike(exportsData, /transit|in\s*transit|eta|etd|ship|vessel|container|arrival|departure|dispatch|tracking/i);
+            tlog("[RAW exportsData] transit-ish columns found:", transitCols);
+
+            // Show a trimmed view (edit these fields if you know exact column names)
+            console.table(
+              exportsData.slice(0, 10).map((r, i) => ({
+                i,
+                ...pick(r, [
+                  "Market", "MarketCode", "AdditionalAttribute2",
+                  "Brand", "BrandCode",
+                  "Variety", "VarietyCode",
+                  "Product", "ProductName", "Code",
+                  "Date", "Month", "Year",
+                  "Quantity", "Qty", "Cases", "Bottles",
+                  "InTransit", "In Transit", "inTransit", "Transit",
+                  "ETA", "ETD",
+                  "_sheetName"
+                ])
+              }))
+            );
+          }
+
+          tgroupEnd();
 
           let distributorStockOnHand = loadDistributorStockOnHand();
 
@@ -2229,37 +2281,37 @@ export default function Dashboard() {
         const currentDate = new Date();
         const transitCurrentYear = currentDate.getFullYear();
         const transitCurrentMonth = currentDate.getMonth();
+        // After building transitByMonth map
         
         // Process each export to determine which month it should be allocated to
         for (let i = 0; i < filteredExports.length; i++) {
           const e = filteredExports[i];
-          const dateShipped = e.DateShipped ? parseDate(e.DateShipped.toString().trim()) : null;
-          const dateArrival = e.DateArrival ? parseDate(e.DateArrival.toString().trim()) : null;
-          
-          // Determine expected arrival month
-          let arrivalMonth = null;
-          let arrivalYear = null;
-          
-          if (dateArrival) {
-            // Use actual arrival date
-            arrivalMonth = dateArrival.getMonth();
-            arrivalYear = dateArrival.getFullYear();
-          } else if (dateShipped) {
-            // Estimate arrival based on shipping time
-            // Use average shipping time from ShippingDays if available, otherwise estimate
-            const shippingDays = e.ShippingDays || e.DaysInTransit || 30; // Default 30 days
-            const estimatedArrival = new Date(dateShipped);
-            estimatedArrival.setDate(estimatedArrival.getDate() + Math.ceil(shippingDays));
-            arrivalMonth = estimatedArrival.getMonth();
-            arrivalYear = estimatedArrival.getFullYear();
-          } else {
-            // No date info: assume current month if status indicates in transit
-            const status = (e.Status || "").toLowerCase().trim();
-            if (status.includes("transit") || status.includes("waiting")) {
-              arrivalMonth = transitCurrentMonth;
-              arrivalYear = transitCurrentYear;
-            }
+          const dateShipped = e.DateShipped ? parseDate(String(e.DateShipped).trim()) : null;
+          if (!dateShipped) continue; // can't bucket without Departing NZ date
+
+          const rowCountry = normalizeCountryCode(
+            String(e.AdditionalAttribute2 || e.Market || "").trim()
+          ).toLowerCase();
+
+          function leadTimeMonthsForCountry(c) {
+            if (c === "au" || c === "au-b" || c === "au-c") return 1;
+            if (c === "usa") return 2;
+            if (c === "ire" || c === "gb" || c === "nl" || c === "den" || c === "pol" || c === "gr") return 3;
+            return 2; // safe default
           }
+
+          function addMonthsSafe(d, m) {
+            const x = new Date(d);
+            x.setMonth(x.getMonth() + m);
+            return x;
+          }
+
+          const leadMonths = leadTimeMonthsForCountry(rowCountry);
+          const arrivalDate = addMonthsSafe(dateShipped, leadMonths);
+
+          const arrivalMonth = arrivalDate.getMonth();
+          const arrivalYear = arrivalDate.getFullYear();
+
           
           if (arrivalMonth !== null && arrivalYear !== null) {
             // Get distributor and wine code
@@ -2300,6 +2352,19 @@ export default function Dashboard() {
             }
           }
         }
+
+        const dbg = [];
+        for (const [periodKey, m] of transitByMonth.entries()) {
+          let totalUSA = 0;
+          for (const v of m.values()) {
+            if ((v.country || "").toLowerCase() === "usa") totalUSA += (v.inTransit || 0);
+          }
+          dbg.push({ periodKey, totalUSA_12pk: Math.round(totalUSA * 100) / 100 });
+        }
+        dbg.sort((a,b) => a.periodKey.localeCompare(b.periodKey));
+        console.table(dbg);
+
+        
         
         const stockFloatArray = Array.from(stockFloatByDistributorWine.values());
         // Helper function to normalize strings for comparison (used in export inclusion check)
