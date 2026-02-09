@@ -482,6 +482,63 @@ function parseDate(dateStr) {
 
 export default function Dashboard() {
 
+  const didAutoSetDateRangeRef = React.useRef(false);
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+function rowToDate(r) {
+  if (!r) return null;
+
+  // 1) direct date fields
+  const raw = r.Date ?? r.date ?? r.SaleDate ?? r.saleDate;
+  if (raw) {
+    const d = raw instanceof Date ? raw : new Date(String(raw).replace(/\//g, "-"));
+    if (!isNaN(d)) return d;
+  }
+
+  // 2) "Period" like "Jan 24" or "Jan 2024"
+  const period = r.Period ?? r.period ?? r.MonthYear ?? r.monthYear;
+  if (period) {
+    const s = String(period).trim();
+    const parts = s.split(/\s+/); // ["Jan","24"] or ["Jan","2024"]
+    if (parts.length >= 2) {
+      const m = parts[0].slice(0,3);
+      const mi = MONTHS.indexOf(m);
+      if (mi >= 0) {
+        let y = parts[1];
+        // "24" -> 2024
+        const year = y.length === 2 ? Number("20" + y) : Number(y);
+        if (Number.isFinite(year)) return new Date(year, mi, 1);
+      }
+    }
+  }
+
+  // 3) separate Month/Year fields
+  const m2 = r.Month ?? r.month;
+  const y2 = r.Year ?? r.year;
+  if (m2 && y2) {
+    const m = String(m2).slice(0,3);
+    const mi = MONTHS.indexOf(m);
+    const year = Number(String(y2).length === 2 ? "20" + y2 : y2);
+    if (mi >= 0 && Number.isFinite(year)) return new Date(year, mi, 1);
+  }
+
+  return null;
+}
+
+function getMinMaxDates(rows) {
+  let min = null;
+  let max = null;
+
+  for (const r of rows || []) {
+    const d = rowToDate(r);
+    if (!d) continue;
+    if (!min || d < min) min = d;
+    if (!max || d > max) max = d;
+  }
+
+  return { min, max };
+}
+
   // ✅ Warehouse stock rows (aggregated from localStorage, same pattern as your projection code)
 const warehouseStockRows = React.useMemo(() => {
   let rows = [];
@@ -711,6 +768,23 @@ const magnumCsTable = React.useMemo(() => {
               }
             } catch (e) {
               // Error parsing sales metadata
+            }
+          }
+
+          // ✅ Auto-set date range to full available history (oldest -> newest), once
+          if (!didAutoSetDateRangeRef.current && salesData.length > 0) {
+            const { min, max } = getMinMaxDates(salesData);
+
+            if (min && max) {
+              const from = new Date(min.getFullYear(), min.getMonth(), 1);
+              const to = new Date(max.getFullYear(), max.getMonth() + 1, 0); // end of max month
+
+              setFilters(prev => ({
+                ...prev,
+                dateRange: { from, to },
+              }));
+
+              didAutoSetDateRangeRef.current = true;
             }
           }
           
