@@ -33,6 +33,8 @@ function findKeysLike(rows, pattern) {
 }
 
 
+
+
 // ───────── AU-B state helpers ─────────
 function inferAUBStateFromDistributorHeader(v) {
   const s = String(v || "").toUpperCase();
@@ -869,6 +871,8 @@ const magnumCsTable = React.useMemo(() => {
           distributorStockOnHand = divideBy12IfIrelandOrAuC(distributorStockOnHand, countryFilter);
           salesData = divideBy12IfIrelandOrAuC(salesData, countryFilter);
 
+          
+
           // ───────── DEBUG: AU-C sales brand filter sanity ─────────
           if (countryFilter === "au-c") {
             const aucRows = (salesData || []).filter(r =>
@@ -904,6 +908,8 @@ const magnumCsTable = React.useMemo(() => {
         });
 
         const aubColMap = buildAubDsohColMap(aubRows2);
+
+      
 
         // ───────── Pre-fix distributor stock rows BEFORE filtering ─────────
         const distributorStockOnHandFixed = (distributorStockOnHand || []).map((row) => {
@@ -979,6 +985,8 @@ const magnumCsTable = React.useMemo(() => {
 
           return row;
         });
+
+        
 
         // ───────── Filter Distributor Stock On Hand ─────────
         const filteredDistributorStockOnHand = [];
@@ -3281,6 +3289,20 @@ const magnumCsTable = React.useMemo(() => {
         console.log("[WAREHOUSE] DG/FG key candidates:", dgHits);
         console.table(dgHits.slice(0, 10));
 
+        function extractMarketToken(s) {
+          const text = String(s || "");
+        
+          // IMPORTANT: check AU-B / AU-C before AU (if you ever add AU later)
+          if (/\bEU\b/i.test(text)) return "EU";
+          if (/\bUSA\b/i.test(text)) return "USA";
+          if (/\bIRE\b|\bIRELAND\b/i.test(text)) return "IRE";
+          if (/\bNZL\b|\bNZ\b/i.test(text)) return "NZL";
+          if (/\bAU[-\s]?B\b|\bAUB\b/i.test(text)) return "AU-B";
+          if (/\bAU[-\s]?C\b|\bAUC\b/i.test(text)) return "AU-C";
+        
+          return ""; // unknown
+        }
+
         function inferWarehouseMarketRaw(item) {
           // 1) primary fields
           const raw =
@@ -3290,7 +3312,11 @@ const magnumCsTable = React.useMemo(() => {
               item?.additionalAttribute2 ||
               "").toString().trim();
         
-          if (raw) return raw;
+          if (raw) {
+            const token = extractMarketToken(raw);
+            if (token) return token;
+            // if raw exists but doesn't include a known token, fall through
+          }
         
           // 2) fallback: look inside description-like fields
           const text = [
@@ -3309,15 +3335,7 @@ const magnumCsTable = React.useMemo(() => {
             .map(v => String(v))
             .join(" ");
         
-          // IMPORTANT: word boundary so we don't match "NEU" etc
-          if (/\bEU\b/i.test(text)) return "EU";
-          if (/\bUSA\b/i.test(text)) return "USA";
-          if (/\bIRE\b|\bIRELAND\b/i.test(text)) return "IRE";
-          if (/\bNZL\b|\bNZ\b/i.test(text)) return "NZL";
-          if (/\bAU[-\s]?B\b|\bAUB\b/i.test(text)) return "AU-B";
-          if (/\bAU[-\s]?C\b|\bAUC\b/i.test(text)) return "AU-C";
-        
-          return ""; // still unknown
+          return extractMarketToken(text);
         }
         
 
@@ -3334,6 +3352,49 @@ const magnumCsTable = React.useMemo(() => {
             dropped_wine: 0,
             kept: 0,
           };
+
+          // ✅ DEBUG: AU-B warehouse stock (before filtering) — no code changes
+const DEBUG_WH_AUB = true;
+
+if (DEBUG_WH_AUB && normalizeCountryCode(countryFilter).toLowerCase() === "au-b") {
+  console.groupCollapsed("🏭 [WH AU-B] BEFORE filter");
+
+  console.log("[WH AU-B] warehouseStockData rows:", warehouseStockData?.length || 0);
+
+  // quick distribution: what markets are present (as inferred)
+  const marketCounts = {};
+  for (const it of (warehouseStockData || [])) {
+    const raw = inferWarehouseMarketRaw(it);
+    const cc = normalizeCountryCode(raw).toLowerCase();
+    marketCounts[cc] = (marketCounts[cc] || 0) + 1;
+  }
+  console.log("[WH AU-B] inferred market counts:", marketCounts);
+
+  // AU-B candidates in raw data (based on inferred market)
+  const aubCandidates = (warehouseStockData || []).filter((it) => {
+    const cc = normalizeCountryCode(inferWarehouseMarketRaw(it)).toLowerCase();
+    return cc === "au-b";
+  });
+
+  console.log("[WH AU-B] raw AU-B candidates:", aubCandidates.length);
+
+  console.table(
+    aubCandidates.slice(0, 25).map((it, i) => ({
+      i,
+      available12pk: getWarehouseAvailable12pk(it),
+      stockType: getWarehouseStockType(it),
+      Code: it?.Code ?? it?.code,
+      ProductName: it?.ProductName ?? it?.productName,
+      VarietyCode: it?.VarietyCode ?? it?.varietyCode,
+      AdditionalAttribute3: it?.AdditionalAttribute3 ?? it?.additionalAttribute3,
+      inferredMarketRaw: inferWarehouseMarketRaw(it),
+      inferredMarketNorm: normalizeCountryCode(inferWarehouseMarketRaw(it)).toLowerCase(),
+      _sheetName: it?._sheetName,
+    }))
+  );
+
+  console.groupEnd();
+}
           
           const filteredWarehouseStock = warehouseStockData.filter(item => {
             // Skip items without stock data
@@ -3442,7 +3503,32 @@ const magnumCsTable = React.useMemo(() => {
             return true;
           });
 
-          
+          // ✅ DEBUG: AU-B warehouse stock (after filtering)
+          if (DEBUG_WH_AUB && normalizeCountryCode(countryFilter).toLowerCase() === "au-b") {
+            console.groupCollapsed("✅ [WH AU-B] AFTER filter");
+
+            console.log("[WH AU-B] filteredWarehouseStock rows:", filteredWarehouseStock?.length || 0);
+            console.log("[WH AU-B] whDbg (drop counters):", whDbg);
+
+            console.table(
+              (filteredWarehouseStock || []).slice(0, 25).map((it, i) => ({
+                i,
+                available12pk: getWarehouseAvailable12pk(it),
+                stockType: getWarehouseStockType(it),
+                Code: it?.Code ?? it?.code,
+                ProductName: it?.ProductName ?? it?.productName,
+                VarietyCode: it?.VarietyCode ?? it?.varietyCode,
+                AdditionalAttribute3: it?.AdditionalAttribute3 ?? it?.additionalAttribute3,
+                inferredMarketRaw: inferWarehouseMarketRaw(it),
+                inferredMarketNorm: normalizeCountryCode(inferWarehouseMarketRaw(it)).toLowerCase(),
+                _sheetName: it?._sheetName,
+              }))
+            );
+
+            console.groupEnd();
+          }
+
+                    
 
           
           
