@@ -2083,57 +2083,45 @@ const magnumCsTable = React.useMemo(() => {
             exportsByWineCode.set(wineCode, (exportsByWineCode.get(wineCode) || 0) + (parseFloat(e.cases) || 0));
           }
        // ───────── Build Time Range ─────────
-      const from = filters?.dateRange?.from;
-      const to = filters?.dateRange?.to;
-
-      const base = (filters.viewMode === "forward" && to)
-        ? new Date(to)                 // start forward from end of selected range
-        : new Date();                  // fallback
-
-      base.setDate(1); // normalize
-
-      // ───────── Build Time Range ─────────
-
-const monthsToDisplay =
-  filters.viewMode === "forward"
-    ? (() => {
-        const base = filters?.dateRange?.to ? new Date(filters.dateRange.to) : new Date();
-        base.setDate(1);                 // normalize to start of month
-        base.setMonth(base.getMonth() + 1); // ✅ FUTURE months only (next month)
-
-        const list = [];
-        const cur = new Date(base);
-        const n = Number(filters.forwardLookingMonths || 3);
-
-        for (let i = 0; i < n; i++) {
-          list.push({
-            month: monthNames[cur.getMonth()],
-            year: cur.getFullYear().toString(),
-          });
-          cur.setMonth(cur.getMonth() + 1);
-        }
-        return list;
-      })()
-    : (() => {
         const from = filters?.dateRange?.from;
         const to = filters?.dateRange?.to;
-        if (!from || !to) return [];
 
-        const cur = new Date(from);
-        cur.setDate(1);
-        const end = new Date(to);
-        end.setDate(1);
+        const base = (filters.viewMode === "forward" && to)
+          ? new Date(to)                 // start forward from end of selected range
+          : new Date();                  // fallback
 
-        const list = [];
-        while (cur <= end) {
-          list.push({
-            month: monthNames[cur.getMonth()],
-            year: cur.getFullYear().toString(),
-          });
-          cur.setMonth(cur.getMonth() + 1);
-        }
-        return list;
-      })();
+        base.setDate(1); // normalize
+
+        const monthsToDisplay =
+          filters.viewMode === "forward"
+            ? (() => {
+                const list = [];
+                const cur = new Date(base);
+                for (let i = 0; i < (filters.forwardLookingMonths || 3); i++) {
+                  list.push({
+                    month: monthNames[cur.getMonth()],
+                    year: cur.getFullYear().toString(),
+                  });
+                  cur.setMonth(cur.getMonth() + 1);
+                }
+                return list;
+              })()
+            : (() => {
+                const cur = new Date(from);
+                cur.setDate(1);
+                const end = new Date(to);
+                end.setDate(1);
+
+                const list = [];
+                while (cur <= end) {
+                  list.push({
+                    month: monthNames[cur.getMonth()],
+                    year: cur.getFullYear().toString(),
+                  });
+                  cur.setMonth(cur.getMonth() + 1);
+                }
+                return list;
+              })();
         // ───────── Sales Prediction Calculation from Depletion Summary ─────────
         // SIMPLE FORMULA: Average = Sum / Count
         // Sum = total sales of cases in the observed period
