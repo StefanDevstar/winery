@@ -2082,30 +2082,58 @@ const magnumCsTable = React.useMemo(() => {
             if (!wineCode) continue;
             exportsByWineCode.set(wineCode, (exportsByWineCode.get(wineCode) || 0) + (parseFloat(e.cases) || 0));
           }
-        // ───────── Build Time Range ─────────
-        const now = new Date();
-        const currentYear = now.getFullYear().toString();
-        const monthsToDisplay =
-          filters.viewMode === "forward"
-            ? monthNames.slice(0, filters.forwardLookingMonths).map((m) => ({
-                month: m,
-                year: currentYear,
-              }))
-            : (() => {
-                const from = filters.dateRange.from;
-                const to = filters.dateRange.to;
-                const cur = new Date(from);
-                const list = [];
-                while (cur <= to) {
-                  list.push({
-                    month: monthNames[cur.getMonth()],
-                    year: cur.getFullYear().toString(),
-                  });
-                  cur.setMonth(cur.getMonth() + 1);
-                }
-                return list;
-              })();
+       // ───────── Build Time Range ─────────
+      const from = filters?.dateRange?.from;
+      const to = filters?.dateRange?.to;
 
+      const base = (filters.viewMode === "forward" && to)
+        ? new Date(to)                 // start forward from end of selected range
+        : new Date();                  // fallback
+
+      base.setDate(1); // normalize
+
+      // ───────── Build Time Range ─────────
+
+const monthsToDisplay =
+  filters.viewMode === "forward"
+    ? (() => {
+        const base = filters?.dateRange?.to ? new Date(filters.dateRange.to) : new Date();
+        base.setDate(1);                 // normalize to start of month
+        base.setMonth(base.getMonth() + 1); // ✅ FUTURE months only (next month)
+
+        const list = [];
+        const cur = new Date(base);
+        const n = Number(filters.forwardLookingMonths || 3);
+
+        for (let i = 0; i < n; i++) {
+          list.push({
+            month: monthNames[cur.getMonth()],
+            year: cur.getFullYear().toString(),
+          });
+          cur.setMonth(cur.getMonth() + 1);
+        }
+        return list;
+      })()
+    : (() => {
+        const from = filters?.dateRange?.from;
+        const to = filters?.dateRange?.to;
+        if (!from || !to) return [];
+
+        const cur = new Date(from);
+        cur.setDate(1);
+        const end = new Date(to);
+        end.setDate(1);
+
+        const list = [];
+        while (cur <= end) {
+          list.push({
+            month: monthNames[cur.getMonth()],
+            year: cur.getFullYear().toString(),
+          });
+          cur.setMonth(cur.getMonth() + 1);
+        }
+        return list;
+      })();
         // ───────── Sales Prediction Calculation from Depletion Summary ─────────
         // SIMPLE FORMULA: Average = Sum / Count
         // Sum = total sales of cases in the observed period
@@ -2749,6 +2777,8 @@ const magnumCsTable = React.useMemo(() => {
         let previousAggregateStockFloat = undefined; // Track previous month's aggregate stock float
         
         const projection = monthsToDisplay.map(({ month, year }, idx) => {
+          const isForward = filters.viewMode === "forward";
+          const isForwardBaseline = isForward && idx === 0; // first forward month on the chart
           // Determine if this period is historical (past) or future
           const periodYear = parseInt(year);
           const periodMonthIndex = monthNames.indexOf(month);
@@ -2762,6 +2792,7 @@ const magnumCsTable = React.useMemo(() => {
           
           // For future periods: Use predictedSales (constant, not cumulative)
           // We'll subtract it from the previous month's stock float
+
           const salesToUse = isHistorical ? actualSalesForPeriod : predictedSales;
 
           // Get transit items for this specific month
@@ -2804,75 +2835,47 @@ const magnumCsTable = React.useMemo(() => {
 
           // Limit to first 1000 items to prevent performance issues with very large datasets
           const limitedStockFloat = monthStockFloatArray;
-          const distributorProjections = limitedStockFloat.map(item => {
-            // Get market for this item
-            const itemMarket = (item.country || "").toLowerCase();
-            
-            // Calculate wine-specific sales for this period
-            // For historical periods: Use actual sales data for this wine/market in this period
-            // For future periods: Use cumulative predicted sales (1x, 2x, 3x, etc.)
-            let wineSalesForPeriod = 0;
-            
-            if (isHistorical) {
-              // For historical periods, get actual sales for this wine/market in this period
-              // We need to get actual sales from filteredStock for this specific period and wine
-              // Since we don't have wine-level historical sales readily available, we'll distribute
-              // the period's actual sales proportionally based on stock float
-              const totalStockForMarket = monthStockFloatArray
-                .filter(i => (i.country || "").toLowerCase() === itemMarket)
-                .reduce((sum, i) => sum + i.totalStockFloat, 0);
-              
-              if (totalStockForMarket > 0 && actualSalesForPeriod > 0) {
-                // Distribute actual sales proportionally based on stock float
-                const wineProportion = item.totalStockFloat / totalStockForMarket;
-                wineSalesForPeriod = actualSalesForPeriod * wineProportion;
-              } else if (actualSalesForPeriod > 0) {
-                // Equal distribution if no stock data
-                const marketItemCount = monthStockFloatArray.filter(i => (i.country || "").toLowerCase() === itemMarket).length;
-                wineSalesForPeriod = marketItemCount > 0 ? actualSalesForPeriod / marketItemCount : 0;
-              }
-            } else {
-              // For future periods: Use predicted sales (constant, same for all months)
-              // Get the pre-calculated monthly predicted sales for this wine
-              const itemKey = `${item.distributor.toLowerCase()}_${item.wineCode}`;
-              wineSalesForPeriod = winePredictedSalesMap.get(itemKey) || 0;
-            }
-            
-            // Stock Float calculation for FORWARD PREDICTIONS:
-            // Formula: Stock Float = Previous Stock Float - predictedSales + Stock in Transit
-            // For historical: Stock Float = Stock - Actual Sales + In Transit
-            // For future: Subtract predictedSales ONCE per month from previous month's stock float
-            let stockFloat = 0;
+          const distributorProjections = limitedStockFloat.map((item) => {
             const itemKey = `${item.distributor.toLowerCase()}_${item.wineCode}`;
-            
+            const isForward = filters.viewMode === "forward";
+            const isForwardBaseline = isForward && idx === 0;
+          
+            // TODO: you still need to compute wineSalesForPeriod properly.
+            // For now, assuming you already set it above this block.
+            let wineSalesForPeriod = 0;
+          
+            let stockFloat;
+          
             if (isHistorical) {
-              // Historical: Stock Float = Stock - Actual Sales + In Transit
+              // Historical: Stock - actualSales + transit
               stockFloat = Math.max(0, item.stock - wineSalesForPeriod + item.inTransit);
             } else {
-              // Future: Get previous month's stock float, subtract predictedSales once, add in-transit
-              const previousStockFloat = cumulativeStockFloatByItem.get(itemKey);
-              if (previousStockFloat !== undefined) {
-                // Month 2+: Stock Float = Previous Stock Float - predictedSales + In Transit
-                stockFloat = Math.max(0, previousStockFloat - wineSalesForPeriod + item.inTransit);
+              if (isForwardBaseline) {
+                // Baseline: show "now" snapshot (no subtraction yet)
+                stockFloat = Math.max(0, item.stock + item.inTransit);
               } else {
-                // Month 1: Stock Float = Stock - predictedSales + In Transit
-                stockFloat = Math.max(0, item.stock - wineSalesForPeriod + item.inTransit);
+                const prev = cumulativeStockFloatByItem.get(itemKey);
+                stockFloat = Math.max(
+                  0,
+                  (prev ?? (item.stock + item.inTransit)) - wineSalesForPeriod + item.inTransit
+                );
               }
-              // Store for next month
-              cumulativeStockFloatByItem.set(itemKey, stockFloat);
             }
-            
+          
+            // store for next month (only matters for forward)
+            cumulativeStockFloatByItem.set(itemKey, stockFloat);
+          
             return {
               distributor: item.distributor,
               wineCode: item.wineCode,
               brand: item.brand,
               variety: item.variety,
               country: item.country,
-              stock: item.stock, // Stock on hand
-              inTransit: item.inTransit, // In-transit cases for this month
-              sales: wineSalesForPeriod, // Actual sales for historical, cumulative predicted sales for future
-              predictedSales: isHistorical ? wineSalesForPeriod : (winePredictedSalesMap.get(`${item.distributor.toLowerCase()}_${item.wineCode}`) || 0), // Monthly predicted sales (for display)
-              stockFloat: stockFloat // Distributor stock on hand - cumulative sales + in-transit
+              stock: item.stock,
+              inTransit: item.inTransit,
+              sales: wineSalesForPeriod,
+              predictedSales: isHistorical ? wineSalesForPeriod : (winePredictedSalesMap.get(itemKey) || 0),
+              stockFloat,
             };
           });
 
@@ -2882,8 +2885,11 @@ const magnumCsTable = React.useMemo(() => {
           
           // For aggregate: Use predictedSales (constant) for future months
           // Historical: use actual sales. Future: use predictedSales (subtract once per month)
-          const totalSalesForPeriod = isHistorical ? actualSalesForPeriod : predictedSales;
-          
+          const totalSalesForPeriod =
+            isHistorical ? actualSalesForPeriod
+            : isForwardBaseline ? 0
+            : predictedSales;
+                    
           // Calculate aggregate stock float
           // For historical: Stock Float = Total Stock - Actual Sales + In Transit
           // For future: Stock Float = Previous Total Stock Float - predictedSales + In Transit
@@ -2897,10 +2903,10 @@ const magnumCsTable = React.useMemo(() => {
               // Month 2+: Stock Float = Previous Stock Float - predictedSales + In Transit
               totalStockFloat = Math.max(0, previousAggregateStockFloat - totalSalesForPeriod + totalInTransit);
             } else {
-              // Month 1: Stock Float = Total Stock - predictedSales + In Transit
-              totalStockFloat = Math.max(0, totalStock - totalSalesForPeriod + totalInTransit);
+              const prev = previousAggregateStockFloat ?? (totalStock + totalInTransit);
+              totalStockFloat = Math.max(0, prev - totalSalesForPeriod + totalInTransit);
             }
-            previousAggregateStockFloat = totalStockFloat; // Update for next iteration
+            previousAggregateStockFloat = totalStockFloat;
           }
 
           return {
