@@ -2,18 +2,21 @@ import React, { useState, useCallback, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Upload, FileText, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { Upload, FileText, CheckCircle, AlertCircle, Loader2, Lock } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 
 export default function DataUploadCard({
   title,
   description,
+  subtitle,
   Icon,
   onFileUpload,
   processingStatus,
   acceptFileTypes = ".csv",
   lastUpdated = null,
-  onReset = null
+  onReset = null,
+  disabled = false,
+  uploadedStatus = 'ready',
 }) {
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef(null);
@@ -21,38 +24,38 @@ export default function DataUploadCard({
   const handleDrag = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (disabled) return;
     if (e.type === "dragenter" || e.type === "dragover") {
       setDragActive(true);
     } else if (e.type === "dragleave") {
       setDragActive(false);
     }
-  }, []);
+  }, [disabled]);
 
   const handleDrop = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
+    if (disabled) return;
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       onFileUpload(e.dataTransfer.files[0]);
     }
-  }, [onFileUpload]);
+  }, [onFileUpload, disabled]);
 
   const handleFileSelect = (e) => {
+    if (disabled) return;
     if (e.target.files && e.target.files[0]) {
       onFileUpload(e.target.files[0]);
     }
-    // Reset input value so the same file can be selected again
     if (e.target) {
       e.target.value = '';
     }
   };
 
   const handleTryAgain = () => {
-    // Reset error status if reset callback is provided
     if (onReset) {
       onReset();
     }
-    // Reset file input value to allow selecting the same file again
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
       fileInputRef.current.click();
@@ -60,6 +63,20 @@ export default function DataUploadCard({
   };
 
   const statusContent = () => {
+    if (disabled && uploadedStatus === 'uploaded') {
+      return (
+        <div className="text-center space-y-2 py-4">
+          <div className="relative">
+            <Lock className="w-12 h-12 mx-auto text-slate-400" />
+          </div>
+          <p className="text-sm text-slate-500 font-medium">Month locked - data uploaded</p>
+          <Badge className="bg-green-100 text-green-700 border-green-300">
+            Uploaded
+          </Badge>
+        </div>
+      );
+    }
+
     switch (processingStatus.status) {
       case 'processing':
         return (
@@ -104,7 +121,9 @@ export default function DataUploadCard({
         return (
           <div
             className={`p-4 sm:p-8 border-2 border-dashed rounded-lg transition-all ${
-              dragActive 
+              disabled
+                ? "border-gray-200 bg-gray-50 opacity-60 cursor-not-allowed"
+                : dragActive 
                 ? "border-blue-400 bg-blue-50 scale-105" 
                 : "border-gray-300 hover:border-gray-400"
             }`}
@@ -116,18 +135,19 @@ export default function DataUploadCard({
             <div className="text-center">
               <Upload className="w-8 h-8 sm:w-10 sm:h-10 mx-auto text-slate-400 mb-2 sm:mb-3" />
               <p className="text-xs sm:text-sm text-slate-600 mb-1 font-medium">
-                {acceptFileTypes.includes('.xlsx') ? 'Drop Excel or CSV file here' : 'Drop CSV file here'}
+                {disabled ? 'Month is locked' : acceptFileTypes.includes('.xlsx') ? 'Drag and drop' : 'Drop CSV file here'}
               </p>
               <p className="text-xs text-slate-400 mb-2 sm:mb-3">
-                or
+                {disabled ? '' : `or click "Choose file" — allowed: ${acceptFileTypes}`}
               </p>
               <Button 
                 type="button" 
                 variant="outline" 
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => !disabled && fileInputRef.current?.click()}
                 className="text-xs sm:text-sm w-full sm:w-auto"
+                disabled={disabled}
               >
-                Browse File
+                Choose file
               </Button>
             </div>
           </div>
@@ -137,25 +157,26 @@ export default function DataUploadCard({
 
   return (
     <Card className={`glass-effect shadow-lg transition-all duration-300 ${
-      processingStatus.status === 'success' ? 'border-green-300 border-2' : ''
+      processingStatus.status === 'success' ? 'border-green-300 border-2' : 
+      disabled && uploadedStatus === 'uploaded' ? 'border-green-200 border' : ''
     }`}>
-      {/* Always render file input so it's available for "Try again" button */}
       <input
         ref={fileInputRef}
         type="file"
         accept={acceptFileTypes}
         onChange={handleFileSelect}
         className="hidden"
+        disabled={disabled}
       />
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 sm:gap-3">
             <div className={`p-1.5 sm:p-2 rounded-lg shrink-0 ${
-              processingStatus.status === 'success' 
+              processingStatus.status === 'success' || (disabled && uploadedStatus === 'uploaded')
                 ? 'bg-green-500' 
                 : 'gold-accent'
             }`}>
-              {processingStatus.status === 'success' ? (
+              {processingStatus.status === 'success' || (disabled && uploadedStatus === 'uploaded') ? (
                 <CheckCircle className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
               ) : (
                 <Icon className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
@@ -164,11 +185,23 @@ export default function DataUploadCard({
             <div className="min-w-0">
               <CardTitle className="text-sm sm:text-base font-semibold">{title}</CardTitle>
               <p className="text-xs text-slate-500 line-clamp-2">{description}</p>
+              {subtitle && (
+                <p className="text-xs text-slate-400 mt-0.5 font-medium">{subtitle}</p>
+              )}
               {lastUpdated && (
                 <p className="text-xs text-slate-400 mt-1">Last updated: {lastUpdated}</p>
               )}
             </div>
           </div>
+          <Badge variant={uploadedStatus === 'uploaded' ? 'default' : 'outline'} className="text-xs shrink-0">
+            {disabled && uploadedStatus === 'uploaded' ? (
+              <><Lock className="w-3 h-3 mr-1" /> Locked</>
+            ) : uploadedStatus === 'uploaded' ? (
+              <><CheckCircle className="w-3 h-3 mr-1" /> Done</>
+            ) : (
+              <><Upload className="w-3 h-3 mr-1" /> Ready</>
+            )}
+          </Badge>
         </div>
       </CardHeader>
       <CardContent>

@@ -1699,6 +1699,10 @@ export function normalizeExportsData(records, sheetName = '', monthNames = [
 
     // NEW: pull case size if present (your column N)
     const caseSizeCol = findColumn(['Case Size', 'CaseSize', 'Pack', 'Pack Size']);
+
+    // NEW: Market and State columns for transit filtering by state
+    const marketCol = findColumn(['Market', 'Destination Market', 'Destination Country']);
+    const stateCol = findColumn(['State', 'Destination State', 'Ship State', 'Ship To State']);
  // -----------------------
     // Forward-fill context
     // -----------------------
@@ -1795,6 +1799,10 @@ export function normalizeExportsData(records, sheetName = '', monthNames = [
         debugBuckets.set(arrivalPeriodKey, (debugBuckets.get(arrivalPeriodKey) || 0) + casesUnits);
       }
 
+      // Extract market and state from dedicated columns if available
+      const exportMarket = marketCol ? normalizeCountryCode(String(row[marketCol] || "").trim()) : countryCode;
+      const exportState = stateCol ? String(row[stateCol] || "").trim() : "";
+
       normalized.push({
         Stock: productDesc,
         ProductDescription: productDesc,
@@ -1810,18 +1818,21 @@ export function normalizeExportsData(records, sheetName = '', monthNames = [
 
         Customer: customer,
         Company: customer,
-        cases: casesUnits,          // IMPORTANT: store as 12pk units now
-        _casesRaw: cases,           // optional: raw cases before unit conversion
-        _caseSize: caseSizeVal,     // optional
+        cases: casesUnits,
+        _casesRaw: cases,
+        _caseSize: caseSizeVal,
         Status: status,
 
-        DateShipped: dateShippedOut,  // stable string
+        DateShipped: dateShippedOut,
 
         ShipmentPeriodKey: shipmentPeriodKey,
         ArrivalPeriodKey: arrivalPeriodKey,
         LeadMonths: leadMonths,
 
         FreightForwarder: freightForwarder,
+
+        ExportMarket: exportMarket,
+        State: exportState,
 
         AdditionalAttribute2: countryCode,
         AdditionalAttribute3: `${skuParts.vintage}`.toUpperCase(),
@@ -2474,4 +2485,125 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
   }
 
   return filterEmptyRecords(normalized);
+}
+
+// ==================== Monthly Snapshot Storage ====================
+
+export const MONTHS_INDEX_KEY = 'vc_months_index';
+export const MONTHLY_DATA_TYPES = ['exports', 'warehouse_stock', 'sales', 'stock_on_hand_distributors'];
+
+export function getMonthsIndex() {
+  try {
+    return JSON.parse(localStorage.getItem(MONTHS_INDEX_KEY) || '{}');
+  } catch { return {}; }
+}
+
+export function saveMonthsIndex(index) {
+  localStorage.setItem(MONTHS_INDEX_KEY, JSON.stringify(index));
+}
+
+export function getMonthDataKey(monthKey, type) {
+  return `vc_month_${monthKey}_${type}`;
+}
+
+export function getMonthSheetKey(monthKey, type, sheetName) {
+  return `vc_month_${monthKey}_${type}_sheet_${sheetName}`;
+}
+
+export function getMonthMetaKey(monthKey, type) {
+  return `vc_month_${monthKey}_${type}_meta`;
+}
+
+export function isMonthComplete(idx, monthKey) {
+  const month = idx[monthKey];
+  if (!month) return false;
+  return MONTHLY_DATA_TYPES.every(type => month[type]?.uploaded);
+}
+
+export function isMonthLocked(idx, monthKey) {
+  return idx[monthKey]?.locked === true;
+}
+
+export function clearMonthTypeData(monthKey, type) {
+  const metaRaw = localStorage.getItem(getMonthMetaKey(monthKey, type));
+  if (metaRaw) {
+    try {
+      const meta = JSON.parse(metaRaw);
+      if (meta.sheetNames && Array.isArray(meta.sheetNames)) {
+        meta.sheetNames.forEach(sn => {
+          localStorage.removeItem(getMonthSheetKey(monthKey, type, sn));
+        });
+      }
+    } catch {}
+    localStorage.removeItem(getMonthMetaKey(monthKey, type));
+  }
+  localStorage.removeItem(getMonthDataKey(monthKey, type));
+}
+
+export function clearMonthAllData(monthKey) {
+  MONTHLY_DATA_TYPES.forEach(type => clearMonthTypeData(monthKey, type));
+}
+
+export function loadAllMonthlyData() {
+  const index = getMonthsIndex();
+  if (!index || Object.keys(index).length === 0) return null;
+
+  const result = {
+    exports: [],
+    warehouse_stock: [],
+    sales: [],
+    stock_on_hand_distributors: [],
+  };
+
+  for (const [monthKey, monthInfo] of Object.entries(index)) {
+    for (const type of MONTHLY_DATA_TYPES) {
+      if (!monthInfo[type]?.uploaded) continue;
+
+      let loaded = false;
+      const metaRaw = localStorage.getItem(getMonthMetaKey(monthKey, type));
+      if (metaRaw) {
+        try {
+          const meta = JSON.parse(metaRaw);
+          if (meta.sheetNames && Array.isArray(meta.sheetNames)) {
+            meta.sheetNames.forEach(sn => {
+              const sheetRaw = localStorage.getItem(getMonthSheetKey(monthKey, type, sn));
+              if (sheetRaw) {
+                const parsed = JSON.parse(sheetRaw);
+                if (Array.isArray(parsed)) {
+                  result[type].push(...parsed.map(r => ({ ...r, _uploadMonth: monthKey, _sheetName: r._sheetName || sn })));
+                }
+              }
+            });
+            loaded = true;
+          }
+        } catch {}
+      }
+
+      if (!loaded) {
+        const raw = localStorage.getItem(getMonthDataKey(monthKey, type));
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              result[type].push(...parsed.map(r => ({ ...r, _uploadMonth: monthKey })));
+            }
+          } catch {}
+        }
+      }
+    }
+  }
+
+  const hasData = Object.values(result).some(arr => arr.length > 0);
+  return hasData ? result : null;
+}
+
+export function getMonthLabel(monthKey) {
+  const [year, month] = monthKey.split('-');
+  const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  return `${monthNames[parseInt(month, 10) - 1]} ${year}`;
+}
+
+export function getCurrentMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }

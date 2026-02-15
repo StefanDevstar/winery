@@ -56,10 +56,6 @@ export default function DistributorMap({ distributors = [] }) {
                       <span className="font-medium">{currentStock.toLocaleString()} cases</span>
                     </div>
                     <div className="flex justify-between">
-                      <span>Coverage:</span>
-                      <span className="font-medium">{daysOfCover} days</span>
-                    </div>
-                    <div className="flex justify-between">
                       <span>Region:</span>
                       <span className="font-medium uppercase">{region}</span>
                     </div>

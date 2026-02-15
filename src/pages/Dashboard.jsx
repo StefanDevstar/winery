@@ -7,11 +7,13 @@ import FilterBar from "../components/dashboard/FilterBar";
 import StockFloatChart from "../components/dashboard/StockFloatChart";
 import ForecastAccuracyChart from "../components/dashboard/ForecastAccuracyChart";
 import WarehouseStockProjectionChart from "../components/dashboard/WarehouseStockProjectionChart";
-import DistributorMap from "../components/dashboard/DistributorMap";
 import AlertsFeed from "../components/dashboard/AlertsFeed";
+import DistributorMap from "../components/dashboard/DistributorMap";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
 import { summarizeWarehouseMagnumAndCS } from "@/lib/utils";
+import { loadAllMonthlyData, getMonthsIndex } from "@/lib/utils";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 
 const DEBUG_TRANSIT = true;
@@ -361,50 +363,50 @@ const matchesBrand = (row, brandFilter /* string like "jtw"/"otq"/"tbh" */) => {
   return false;
 };
 
-// If Ireland is selected, divide all numeric values in the rows by 12
-// If selected country is in "bottles" units, convert to 12pk cases by dividing numeric fields by 12
+// If Ireland/AU-C is selected, divide numeric values by 12 (bottles -> 12pk cases)
+// When "all" mode (countryFilter is null), do per-row conversion based on each row's market
 function divideBy12IfIrelandOrAuC(rows, countryFilter) {
   const cf = String(countryFilter || "").trim().toLowerCase();
-
-  // Countries/markets whose distributor stock sheet is in BOTTLES (not 12pk cases)
   const BOTTLE_MARKETS = new Set(["ire", "ireland", "au-c", "auc", "au c"]);
 
-  if (!BOTTLE_MARKETS.has(cf)) return rows;
+  const isAllMode = !cf || cf === "all";
+  
+  // If specific country and NOT a bottle market, return unchanged
+  if (!isAllMode && !BOTTLE_MARKETS.has(cf)) return rows;
 
-  // don't touch non-quantity fields that would break if divided
   const skip = new Set([
     "_year", "Year", "Vintage",
     "_month", "Month", "month",
     "CaseSize", "BottleVolume",
     "months", "term_years",
-
-    // extra safety (common non-qty columns)
     "Code", "SKU", "Product", "ProductName",
     "Brand", "BrandCode", "Variety", "VarietyCode",
     "Market", "MarketCode", "Location",
-    "_sheetName", "_originalSKU", "_originalData"
+    "_sheetName", "_originalSKU", "_originalData",
+    "_uploadMonth", "_convertedTo12pkCases"
   ]);
 
   return (rows || []).map((r) => {
     if (!r || typeof r !== "object") return r;
-
-    // ✅ idempotent guard (prevents dividing twice)
     if (r._convertedTo12pkCases) return r;
+
+    // In "all" mode, check per-row whether this row is from a bottle market
+    if (isAllMode) {
+      const rowMarket = normalizeCountryCode(
+        r.AdditionalAttribute2 || r.Market || r._sheetName || ""
+      ).toLowerCase();
+      if (!BOTTLE_MARKETS.has(rowMarket)) return r;
+    }
 
     const out = { ...r, _convertedTo12pkCases: true };
 
     for (const k of Object.keys(out)) {
       if (skip.has(k)) continue;
-
       const v = out[k];
-
-      // number
       if (typeof v === "number" && Number.isFinite(v)) {
         out[k] = v / 12;
         continue;
       }
-
-      // numeric string (e.g., "1,234")
       if (typeof v === "string") {
         const s = v.trim();
         if (!s) continue;
@@ -539,30 +541,69 @@ function getMinMaxDates(rows) {
   return { min, max };
 }
 
-  // ✅ Warehouse stock rows (aggregated from localStorage, same pattern as your projection code)
+  // Memoize raw data loading - try monthly storage first, then fall back to legacy
+  const rawData = useMemo(() => {
+    try {
+      // Try monthly storage first
+      const monthlyData = loadAllMonthlyData();
+      if (monthlyData) {
+        return {
+          exportsData: monthlyData.exports.length > 0 ? monthlyData.exports : null,
+          warehouseStock: monthlyData.warehouse_stock.length > 0 ? monthlyData.warehouse_stock : null,
+          stockOnHandDistributors: monthlyData.stock_on_hand_distributors.length > 0 ? monthlyData.stock_on_hand_distributors : null,
+          salesMetadata: null,
+          _monthlySalesData: monthlyData.sales.length > 0 ? monthlyData.sales : null,
+          _isMonthly: true,
+        };
+      }
+
+      // Legacy fallback
+      const salesMetadataRaw = localStorage.getItem("vc_salesmetadata");
+      const exportsRaw = localStorage.getItem("vc_exports_data");
+      const warehouseStockRaw = localStorage.getItem("vc_warehouse_stock_data");
+      const stockOnHandDistributorsRaw = localStorage.getItem("vc_distributor_stock_on_hand_data");
+
+      return {
+        exportsData: exportsRaw ? JSON.parse(exportsRaw) : null,
+        warehouseStock: warehouseStockRaw ? JSON.parse(warehouseStockRaw) : null,
+        stockOnHandDistributors: stockOnHandDistributorsRaw ? JSON.parse(stockOnHandDistributorsRaw) : null,
+        salesMetadata: salesMetadataRaw ? JSON.parse(salesMetadataRaw) : null,
+        _isMonthly: false,
+      };
+    } catch (err) {
+      return null;
+    }
+  }, []);
+
+  // Warehouse stock rows (aggregated from monthly or legacy localStorage)
 const warehouseStockRows = React.useMemo(() => {
   let rows = [];
 
   try {
-    // If you store a single combined key somewhere, use it here first (optional)
-    const direct = localStorage.getItem("vc_warehouse_stock_data");
-    if (direct) {
-      const parsed = JSON.parse(direct);
-      if (Array.isArray(parsed)) rows = parsed;
+    // Try monthly data first
+    if (rawData?._isMonthly && rawData?.warehouseStock) {
+      rows = rawData.warehouseStock;
+    }
+    
+    // Legacy: combined key
+    if (rows.length === 0) {
+      const direct = localStorage.getItem("vc_warehouse_stock_data");
+      if (direct) {
+        const parsed = JSON.parse(direct);
+        if (Array.isArray(parsed)) rows = parsed;
+      }
     }
 
-    // Otherwise aggregate per-sheet keys using metadata (this matches your projection logic)
+    // Legacy: per-sheet keys
     if (rows.length === 0) {
       const metaRaw = localStorage.getItem("vc_warehouse_stock_metadata");
       if (metaRaw) {
         const meta = JSON.parse(metaRaw);
         const sheetNames = Array.isArray(meta?.sheetNames) ? meta.sheetNames : [];
-
         for (const sn of sheetNames) {
           const key = `vc_warehouse_stock_data_${sn}`;
           const raw = localStorage.getItem(key);
           if (!raw) continue;
-
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed)) rows.push(...parsed);
         }
@@ -572,9 +613,8 @@ const warehouseStockRows = React.useMemo(() => {
     console.warn("[Dashboard] failed to read warehouse stock from localStorage:", err);
   }
 
-  console.log("[Dashboard] warehouseStockRows:", rows.length, rows[0]);
   return rows;
-}, []); // if you have a refreshKey/state, add it in deps
+}, [rawData]);
 
 const magnumCsTable = React.useMemo(() => {
   const out = summarizeWarehouseMagnumAndCS(warehouseStockRows);
@@ -584,9 +624,9 @@ const magnumCsTable = React.useMemo(() => {
 
   
   const [filters, setFilters] = useState({
-    country: "usa", // Default to New Zealand (first in the list)
+    country: "all",
     distributor: "all",
-    state: "all", // State filter for USA
+    state: "all",
     wineType: "all",
     brand: "all",
     channel: "all",
@@ -609,26 +649,16 @@ const magnumCsTable = React.useMemo(() => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [warehouseStockProjection, setWarehouseStockProjection] = useState([]);
 
-  // Memoize raw data loading - only parse JSON once
-  const rawData = useMemo(() => {
+  // Dismissed alerts (persisted in localStorage)
+  const [dismissedAlerts, setDismissedAlerts] = useState(() => {
     try {
-      const salesMetadataRaw = localStorage.getItem("vc_salesmetadata");
-      const exportsRaw = localStorage.getItem("vc_exports_data");
-      const warehouseStockRaw = localStorage.getItem("vc_warehouse_stock_data");
-      const stockOnHandDistributorsRaw = localStorage.getItem("vc_distributor_stock_on_hand_data");
+      return JSON.parse(localStorage.getItem('vc_dismissed_alerts') || '[]');
+    } catch { return []; }
+  });
 
-      // Only require sales (depletion summary) and exports data
-
-      return {
-        exportsData: exportsRaw ? JSON.parse(exportsRaw) : null,  
-        warehouseStock: warehouseStockRaw ? JSON.parse(warehouseStockRaw) : null,
-        stockOnHandDistributors: stockOnHandDistributorsRaw ? JSON.parse(stockOnHandDistributorsRaw) : null,
-        salesMetadata: salesMetadataRaw ? JSON.parse(salesMetadataRaw) : null,
-      };
-    } catch (err) {
-      return null;
-    }
-  }, []); // Only load once on mount
+  // Magnum/CS table filters
+  const [magnumTableBrand, setMagnumTableBrand] = useState("all");
+  const [magnumTableVariety, setMagnumTableVariety] = useState("all");
 
   useEffect(() => {
     console.log("[Dashboard] country changed ->", filters.country);
@@ -728,47 +758,47 @@ const magnumCsTable = React.useMemo(() => {
 
           let distributorStockOnHand = loadDistributorStockOnHand();
 
-      
-
-          // Load sales data (depletion summary) - always load from individual sheets using salesMetadata
-          // Only load specific distributor sheets: IRE, NZL, AU-C
-          let salesData = []; // This is actually the depletion summary (sales data)
-          const salesMetadataRaw = localStorage.getItem("vc_sales_metadata");
-          if (salesMetadataRaw) {
-            try {
-              const salesMeta = JSON.parse(salesMetadataRaw);
-              if (salesMeta.sheetNames && Array.isArray(salesMeta.sheetNames)) {
-                // Only load specific distributor sheets: IRE, NZL, AU-C
-                const allowedSheets = ['IRE', 'NZL', 'USA', 'AU-B', 'AU-C'];
-                
-                salesMeta.sheetNames.forEach(sheetName => {
-                  // Check if this sheet is in the allowed list (case-insensitive)
-                  const normalizedSheetName = sheetName.toUpperCase();
-                  const isAllowed = allowedSheets.some(allowed => 
-                    normalizedSheetName === allowed.toUpperCase() || 
-                    normalizedSheetName.includes(allowed.toUpperCase())
-                  );
+          // Load sales data - from monthly storage or legacy per-sheet keys
+          let salesData = [];
+          
+          if (rawData?._isMonthly && rawData?._monthlySalesData) {
+            salesData = rawData._monthlySalesData;
+          } else {
+            const salesMetadataRaw = localStorage.getItem("vc_sales_metadata");
+            if (salesMetadataRaw) {
+              try {
+                const salesMeta = JSON.parse(salesMetadataRaw);
+                if (salesMeta.sheetNames && Array.isArray(salesMeta.sheetNames)) {
+                  const allowedSheets = ['IRE', 'NZL', 'USA', 'AU-B', 'AU-C'];
                   
-                  if (isAllowed) {
-                    const sheetKey = `vc_sales_data_${sheetName}`;
-                    const sheetData = localStorage.getItem(sheetKey);
-                    if (sheetData) {
-                      try {
-                        const parsed = JSON.parse(sheetData);
-                        if (Array.isArray(parsed)) {
-                          salesData.push(...parsed.map(r => ({ ...r, _sheetName: r?._sheetName ?? sheetName })));
-                        }
-                        
-                      } catch (e) {
-                        // Error parsing sales sheet
+                  salesMeta.sheetNames.forEach(sheetName => {
+                    const normalizedSheetName = sheetName.toUpperCase();
+                    const isAllowed = allowedSheets.some(allowed => 
+                      normalizedSheetName === allowed.toUpperCase() || 
+                      normalizedSheetName.includes(allowed.toUpperCase())
+                    );
+                    
+                    if (isAllowed) {
+                      const sheetKey = `vc_sales_data_${sheetName}`;
+                      const sheetData = localStorage.getItem(sheetKey);
+                      if (sheetData) {
+                        try {
+                          const parsed = JSON.parse(sheetData);
+                          if (Array.isArray(parsed)) {
+                            salesData.push(...parsed.map(r => ({ ...r, _sheetName: r?._sheetName ?? sheetName })));
+                          }
+                        } catch (e) {}
                       }
                     }
-                  }
-                });
-              }
-            } catch (e) {
-              // Error parsing sales metadata
+                  });
+                }
+              } catch (e) {}
             }
+          }
+
+          // Also load monthly distributor SOH if available
+          if (rawData?._isMonthly && rawData?.stockOnHandDistributors && rawData.stockOnHandDistributors.length > 0) {
+            distributorStockOnHand = rawData.stockOnHandDistributors;
           }
 
           // ✅ Auto-set date range to full available history (oldest -> newest), once
@@ -792,7 +822,10 @@ const magnumCsTable = React.useMemo(() => {
           // ✅ DEBUG: SALES load + AU-C presence
           console.groupCollapsed("[SALES] load debug");
           console.log("[SALES] total rows:", salesData.length);
-          console.log("[SALES] meta sheetNames:", salesMetadataRaw ? JSON.parse(salesMetadataRaw)?.sheetNames : null);
+          try {
+            const _debugSalesMeta = localStorage.getItem("vc_sales_metadata");
+            console.log("[SALES] meta sheetNames:", _debugSalesMeta ? JSON.parse(_debugSalesMeta)?.sheetNames : "(monthly or none)");
+          } catch {};
 
           const bySheet = salesData.reduce((acc, r) => {
             const sn = String(r?._sheetName || "").trim() || "(none)";
@@ -1692,8 +1725,8 @@ const magnumCsTable = React.useMemo(() => {
             if (!yearMatch) continue;
           }
 
-          // ✅ USA state filter (if exports have state in a field; otherwise this will just skip nothing)
-          if (countryFilter === "usa" && usaStateWant) {
+          // USA state filter (uses State field from export data or AdditionalAttribute4)
+          if ((countryFilter === "usa" || (!countryFilter && rowCountry === "usa")) && usaStateWant) {
             const st =
               String(
                 r.State ??
@@ -1705,13 +1738,11 @@ const magnumCsTable = React.useMemo(() => {
               )
                 .trim()
                 .toUpperCase();
-
-            // only apply if we actually have a state on the row
             if (st && st !== usaStateWant) continue;
           }
 
-          // ✅ AU-B state filter (this is the important one)
-          if (countryFilter === "au-b" && aubStateWant) {
+          // AU-B state filter
+          if ((countryFilter === "au-b" || (!countryFilter && rowCountry === "au-b")) && aubStateWant) {
             const st = getAubStateFromExportRow(r);
             if (!st || st !== aubStateWant) continue;
           }
@@ -3950,7 +3981,89 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
     atRiskPrev = 0,
   } = kpiValues;
 
-  
+  // Compute coverage days and predicted stockout from stock float data
+  const { coverageDays, predictedStockoutDate } = useMemo(() => {
+    if (!stockFloatData || stockFloatData.length === 0) {
+      return { coverageDays: null, predictedStockoutDate: null };
+    }
+
+    const latestData = stockFloatData[stockFloatData.length - 1];
+    const totalSales = stockFloatData.reduce((sum, d) => sum + (d.predictedSales || 0), 0);
+    const monthCount = stockFloatData.length;
+    const avgMonthlySales = monthCount > 0 ? totalSales / monthCount : 0;
+    const dailySalesRate = avgMonthlySales / 30;
+    const coverage = dailySalesRate > 0 ? Math.round((latestData?.stockFloat || 0) / dailySalesRate) : null;
+
+    // Find first period where stock float drops to 0 or below
+    const stockoutPoint = stockFloatData.find(d => (d.stockFloat ?? 0) <= 0);
+    const stockoutDate = stockoutPoint ? stockoutPoint.period : null;
+
+    return { coverageDays: coverage, predictedStockoutDate: stockoutDate };
+  }, [stockFloatData]);
+
+  // Filter alerts by dismissed list
+  const visibleAlerts = useMemo(() => {
+    return alerts.map((a, i) => ({
+      ...a,
+      _id: a.id || a._id || `${a.title}_${a.distributor}_${a.wine_type}_${i}`,
+    })).filter(a => !dismissedAlerts.includes(a._id));
+  }, [alerts, dismissedAlerts]);
+
+  const handleDismissAlert = useCallback((alertId) => {
+    setDismissedAlerts(prev => {
+      const next = [...prev, alertId];
+      localStorage.setItem('vc_dismissed_alerts', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  // Filtered Magnum/CS table
+  const filteredMagnumCsTable = useMemo(() => {
+    if (!Array.isArray(magnumCsTable) || magnumCsTable.length === 0) return [];
+    
+    return magnumCsTable.filter(r => {
+      const wine = (r.wine || "").toUpperCase();
+      
+      // Brand filter
+      if (magnumTableBrand !== "all") {
+        const brandMap = {
+          jt: ["JT "],
+          otq: ["OTQ"],
+          tbh: ["TBH", "BH "],
+        };
+        const patterns = brandMap[magnumTableBrand] || [];
+        if (patterns.length > 0 && !patterns.some(p => wine.includes(p))) return false;
+      }
+      
+      // Variety filter
+      if (magnumTableVariety !== "all") {
+        const varietyMap = {
+          sab: ["SAB"],
+          pin: ["PIN"],
+          chr: ["CHR", "CHARD"],
+          pig: ["PIG"],
+          ros: ["ROS", "ROSE"],
+          gru: ["GRU"],
+          lhs: ["LHS"],
+          ries: ["RIES"],
+        };
+        const patterns = varietyMap[magnumTableVariety] || [];
+        if (patterns.length > 0 && !patterns.some(p => wine.includes(p))) return false;
+      }
+      
+      return true;
+    });
+  }, [magnumCsTable, magnumTableBrand, magnumTableVariety]);
+
+  // Compute totals for filtered Magnum/CS table
+  const magnumCsTotals = useMemo(() => {
+    if (!filteredMagnumCsTable || filteredMagnumCsTable.length === 0) return null;
+    return {
+      cs_12pk: Math.round(filteredMagnumCsTable.reduce((sum, r) => sum + (r.cs_12pk || 0), 0) * 100) / 100,
+      magnum_12pk: Math.round(filteredMagnumCsTable.reduce((sum, r) => sum + (r.magnum_12pk || 0), 0) * 100) / 100,
+      total_12pk: Math.round(filteredMagnumCsTable.reduce((sum, r) => sum + (r.total_12pk || 0), 0) * 100) / 100,
+    };
+  }, [filteredMagnumCsTable]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-white p-3 sm:p-4 md:p-6">
@@ -3960,8 +4073,6 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
             <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
             <span className="hidden sm:inline">Processing data...</span>
             <span className="sm:hidden">Processing...</span>
-
-            
           </div>
         )}
         <FilterBar filters={filters} onFilterChange={handleFilterChange} />
@@ -4010,21 +4121,58 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
               threshold={1000}
               distributor={filters.distributor}
               wineType={filters.wineType}
+              onExport={() => {}}
+              coverageDays={coverageDays}
+              predictedStockoutDate={predictedStockoutDate}
             />
             <ForecastAccuracyChart data={forecastAccuracyData} />
             <WarehouseStockProjectionChart data={warehouseStockProjection} />
           </div>
 
           <div className="lg:col-span-1">
-            <AlertsFeed alerts={alerts} />
+            <AlertsFeed 
+              alerts={visibleAlerts} 
+              onDismiss={handleDismissAlert}
+            />
           </div>
         </div>
 
-        {/* ✅ Put the table HERE (outside the chart grid, before DistributorMap) */}
+        {/* Warehouse: Magnum & C/S Table with Filters */}
         {Array.isArray(magnumCsTable) && magnumCsTable.length > 0 && (
           <div className="mt-4 rounded-xl border bg-white p-4">
-            <div className="text-sm font-semibold mb-3">
-              Warehouse: Magnum & C/S (12pk units)
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+              <div className="text-sm font-semibold">
+                Warehouse: Magnum & C/S (12pk units)
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                <Select value={magnumTableBrand} onValueChange={setMagnumTableBrand}>
+                  <SelectTrigger className="w-36 h-8 text-xs">
+                    <SelectValue placeholder="Brand" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Brands</SelectItem>
+                    <SelectItem value="jt">Jules Taylor</SelectItem>
+                    <SelectItem value="otq">On the Quiet</SelectItem>
+                    <SelectItem value="tbh">The Better Half</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={magnumTableVariety} onValueChange={setMagnumTableVariety}>
+                  <SelectTrigger className="w-40 h-8 text-xs">
+                    <SelectValue placeholder="Variety" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Varieties</SelectItem>
+                    <SelectItem value="sab">Sauvignon Blanc</SelectItem>
+                    <SelectItem value="pin">Pinot Noir</SelectItem>
+                    <SelectItem value="chr">Chardonnay</SelectItem>
+                    <SelectItem value="pig">Pinot Gris</SelectItem>
+                    <SelectItem value="ros">Rose</SelectItem>
+                    <SelectItem value="gru">Gruner Veltliner</SelectItem>
+                    <SelectItem value="lhs">Late Harvest</SelectItem>
+                    <SelectItem value="ries">Riesling</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
             <div className="overflow-auto">
@@ -4038,14 +4186,23 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {magnumCsTable.map((r) => (
-                    <tr key={r.wine} className="border-b last:border-0">
+                  {filteredMagnumCsTable.map((r) => (
+                    <tr key={r.wine} className="border-b">
                       <td className="py-2 pr-3 font-medium">{r.wine}</td>
                       <td className="py-2 px-3 text-right">{r.cs_12pk}</td>
                       <td className="py-2 px-3 text-right">{r.magnum_12pk}</td>
                       <td className="py-2 pl-3 text-right">{r.total_12pk}</td>
                     </tr>
                   ))}
+                  {/* Totals row */}
+                  {magnumCsTotals && (
+                    <tr className="border-t-2 border-slate-300 font-bold bg-slate-50">
+                      <td className="py-2 pr-3">Total</td>
+                      <td className="py-2 px-3 text-right">{magnumCsTotals.cs_12pk}</td>
+                      <td className="py-2 px-3 text-right">{magnumCsTotals.magnum_12pk}</td>
+                      <td className="py-2 pl-3 text-right">{magnumCsTotals.total_12pk}</td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

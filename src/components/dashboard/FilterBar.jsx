@@ -6,7 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Filter, Calendar as CalendarIcon, TrendingUp } from "lucide-react";
 import { format } from "date-fns";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { normalizeCountryCode } from "@/lib/utils";
+import { normalizeCountryCode, loadAllMonthlyData, getMonthsIndex } from "@/lib/utils";
 
 const AUS_STATES = ["NSW", "VIC", "QLD", "SA", "WA", "TAS", "ACT", "NT"];
 
@@ -218,47 +218,73 @@ export default function FilterBar({ filters, onFilterChange }) {
         }
       };
   
-      // ---------- Load distributor stock ----------
-      const distributorRaw = localStorage.getItem("vc_distributor_stock_on_hand_data");
-      const distributorMetadataRaw = localStorage.getItem("vc_distributor_stock_on_hand_metadata");
-      const metadata = distributorMetadataRaw ? safeJson(distributorMetadataRaw) : null;
-  
-      let distributorStock = distributorRaw ? safeJson(distributorRaw) : [];
-      if (!Array.isArray(distributorStock)) distributorStock = [];
-  
-       // ---------- Load sales (only to get USA states + options) ----------
-       const salesMetadataRaw = localStorage.getItem("vc_sales_metadata");
-       let salesData = [];
+      // ---------- Load distributor stock + sales ----------
+      // Try monthly storage first, fall back to legacy
+      let distributorStock = [];
+      let salesData = [];
+      let metadata = null;
 
-       const sheetMatchesSelectedCountry = (sheetName, selectedCountry) => {
-         const sn = String(sheetName || "").toUpperCase();
+      const monthlyData = loadAllMonthlyData();
+      if (monthlyData) {
+        distributorStock = monthlyData.stock_on_hand_distributors || [];
+        salesData = monthlyData.sales || [];
+        // Build metadata from months index for country detection
+        const mIndex = getMonthsIndex();
+        const allSheetNames = new Set();
+        Object.values(mIndex).forEach(monthInfo => {
+          ['sales', 'stock_on_hand_distributors'].forEach(type => {
+            if (monthInfo[type]?.uploaded) {
+              try {
+                const metaKey = `vc_month_${Object.keys(mIndex).find(k => mIndex[k] === monthInfo)}_${type}_meta`;
+                // Infer sheet names from data _sheetName fields
+              } catch {}
+            }
+          });
+        });
+        // Infer sheet names from data for country detection
+        const sheetNames = new Set();
+        [...distributorStock, ...salesData].forEach(r => {
+          const sn = r._sheetName || r.AdditionalAttribute2 || r.Market || '';
+          if (sn) sheetNames.add(String(sn).trim());
+        });
+        metadata = { sheetNames: Array.from(sheetNames) };
+      } else {
+        // Legacy: load from old keys
+        const distributorRaw = localStorage.getItem("vc_distributor_stock_on_hand_data");
+        const distributorMetadataRaw = localStorage.getItem("vc_distributor_stock_on_hand_metadata");
+        metadata = distributorMetadataRaw ? safeJson(distributorMetadataRaw) : null;
+    
+        distributorStock = distributorRaw ? safeJson(distributorRaw) : [];
+        if (!Array.isArray(distributorStock)) distributorStock = [];
+    
+        const salesMetadataRaw = localStorage.getItem("vc_sales_metadata");
 
-         if (!selectedCountry || selectedCountry === "all") return true;
+        const sheetMatchesSelectedCountry = (sheetName, selectedCountry) => {
+          const sn = String(sheetName || "").toUpperCase();
+          if (!selectedCountry || selectedCountry === "all") return true;
+          if (selectedCountry === "usa") return sn.includes("USA");
+          if (selectedCountry === "au-b") return sn.includes("AU-B") || sn.includes("AUB");
+          if (selectedCountry === "au-c") return sn.includes("AU-C") || sn.includes("AUC");
+          if (selectedCountry === "nzl") return sn === "NZ" || sn === "NZL" || sn.includes("NZ");
+          if (selectedCountry === "ire") return sn.includes("IRE");
+          return false;
+        };
 
-         if (selectedCountry === "usa") return sn.includes("USA");
-         if (selectedCountry === "au-b") return sn.includes("AU-B") || sn.includes("AUB");
-         if (selectedCountry === "au-c") return sn.includes("AU-C") || sn.includes("AUC");
-         if (selectedCountry === "nzl") return sn === "NZ" || sn === "NZL" || sn.includes("NZ");
-         if (selectedCountry === "ire") return sn.includes("IRE");
+        if (salesMetadataRaw) {
+          const salesMeta = safeJson(salesMetadataRaw);
+          const selectedCountry = String(filters.country || "all").toLowerCase();
 
-         return false;
-       };
-
-       if (salesMetadataRaw) {
-         const salesMeta = safeJson(salesMetadataRaw);
-         const selectedCountry = String(filters.country || "all").toLowerCase();
-
-         if (salesMeta?.sheetNames && Array.isArray(salesMeta.sheetNames)) {
-           salesMeta.sheetNames.forEach((sheetName) => {
-             if (!sheetMatchesSelectedCountry(sheetName, selectedCountry)) return;
-
-             const key = `vc_sales_data_${sheetName}`;
-             const sheetData = localStorage.getItem(key);
-             const parsed = sheetData ? safeJson(sheetData) : null;
-             if (Array.isArray(parsed)) salesData.push(...parsed);
-           });
-         }
-       }
+          if (salesMeta?.sheetNames && Array.isArray(salesMeta.sheetNames)) {
+            salesMeta.sheetNames.forEach((sheetName) => {
+              if (!sheetMatchesSelectedCountry(sheetName, selectedCountry)) return;
+              const key = `vc_sales_data_${sheetName}`;
+              const sheetData = localStorage.getItem(key);
+              const parsed = sheetData ? safeJson(sheetData) : null;
+              if (Array.isArray(parsed)) salesData.push(...parsed);
+            });
+          }
+        }
+      }
      
   
   
@@ -588,13 +614,14 @@ export default function FilterBar({ filters, onFilterChange }) {
       {/* Primary Filters */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4">
         <div className="grid grid-cols-2 sm:flex gap-2 sm:gap-3">
-          <Select value={filters.country || "nzl"} onValueChange={(value) => {
+          <Select value={filters.country || "all"} onValueChange={(value) => {
             onFilterChange('country', value);
           }}>
             <SelectTrigger className="w-full sm:w-40 text-sm">
-              <SelectValue placeholder="Country" />
+              <SelectValue placeholder="Market" />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="all">All Markets</SelectItem>
               {filterOptions.countries.length > 0 ? (
                 filterOptions.countries.map((country) => (
                   <SelectItem key={country.code} value={country.code}>
@@ -602,12 +629,11 @@ export default function FilterBar({ filters, onFilterChange }) {
                   </SelectItem>
                 ))
               ) : (
-                // Fallback options if no data is available
                 <>
-              <SelectItem value="usa">USA</SelectItem>
+                  <SelectItem value="usa">USA</SelectItem>
                   <SelectItem value="au-b">AU-B</SelectItem>
                   <SelectItem value="au-c">AU-C</SelectItem>
-              <SelectItem value="nzl">New Zealand</SelectItem>
+                  <SelectItem value="nzl">New Zealand</SelectItem>
                   <SelectItem value="ire">Ireland</SelectItem>
                 </>
               )}
