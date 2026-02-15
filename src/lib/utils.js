@@ -7,6 +7,120 @@ export function cn(...inputs) {
   return twMerge(clsx(inputs))
 }
 
+// Detect "6pk" or "12pk" inside the client description string
+function detectPkFromDesc(desc) {
+  const s = String(desc || "").toLowerCase();
+  if (/\b6pk\b/.test(s)) return 6;
+  if (/\b12pk\b/.test(s)) return 12;
+  return null;
+}
+
+// Convert qty into 12pk units (6pk counts as half)
+function to12pkUnits(qty, pk) {
+  const n = Number(qty || 0);
+  if (!Number.isFinite(n)) return 0;
+  if (pk === 6) return n / 2;
+  return n; // 12pk or unknown -> treat as-is
+}
+
+// Make a stable key like "JT 25 SAB NZ" by removing MAGNUM/C/S/6pk/12pk
+function normalizeMagnumCsKey(desc) {
+  return String(desc || "")
+    .toUpperCase()
+    .replace(/\bMAGNUM\b/g, "")
+    .replace(/\bC\/S\b/g, "")
+    .replace(/\b6PK\b/g, "")
+    .replace(/\b12PK\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Pick a sensible qty field from a warehouse row
+function getWarehouseQty(row) {
+  // Priority: Available -> OnHand -> StockOnHand -> anything numeric-ish
+  const candidates = [
+    row?.Available,
+    row?.OnHand,
+    row?.StockOnHand,
+    row?.["On Hand"],
+    row?.Quantity,
+    row?.Qty,
+  ];
+
+  for (const v of candidates) {
+    const n = Number(String(v ?? "").replace(/,/g, ""));
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
+/**
+ * Summarize warehouse rows into a small table:
+ * WineKey | cs_12pk | magnum_12pk
+ *
+ * Uses getWarehouseClientDescription(row) to find the descriptor string.
+ * Uses 6pk/12pk inside descriptor to convert into 12pk units.
+ */
+export function summarizeWarehouseMagnumAndCS(warehouseRows, { debug = false } = {}) {
+  const map = new Map();
+
+  for (let i = 0; i < (warehouseRows || []).length; i++) {
+    const row = warehouseRows[i];
+    if (!row) continue;
+
+    const desc = getWarehouseClientDescription(row) || "";
+    if (!desc) continue;
+
+    const u = desc.toUpperCase();
+    const isMagnum = /\bMAGNUM\b/.test(u);
+    const isCS = /\bC\/S\b/.test(u);
+
+    // only care about these special packs
+    if (!isMagnum && !isCS) continue;
+
+    const qtyRaw = getWarehouseQty(row);
+    const pk = detectPkFromDesc(desc);
+    const qty12pk = to12pkUnits(qtyRaw, pk);
+
+    const key = normalizeMagnumCsKey(desc) || u.trim();
+    if (!map.has(key)) {
+      map.set(key, { wine: key, cs_12pk: 0, magnum_12pk: 0 });
+    }
+
+    const agg = map.get(key);
+    if (isCS) agg.cs_12pk += qty12pk;
+    if (isMagnum) agg.magnum_12pk += qty12pk;
+
+    if (debug && i < 25) {
+      console.log("[WH MAGNUM/CS LINE]", {
+        i,
+        desc,
+        key,
+        isCS,
+        isMagnum,
+        qtyRaw,
+        pk,
+        qty12pk,
+      });
+    }
+  }
+
+  const out = Array.from(map.values())
+    .map(r => ({
+      ...r,
+      cs_12pk: Math.round(r.cs_12pk * 100) / 100,
+      magnum_12pk: Math.round(r.magnum_12pk * 100) / 100,
+      total_12pk: Math.round((r.cs_12pk + r.magnum_12pk) * 100) / 100,
+    }))
+    .sort((a, b) => b.total_12pk - a.total_12pk);
+
+  if (debug) {
+    console.log("[WH MAGNUM/CS TABLE]");
+    console.table(out);
+  }
+
+  return out;
+}
 
 
 const PK_RE = /\b(6|12)\s*(pk|pck)\b/i;
@@ -1338,6 +1452,111 @@ export function normalizeSalesData(records, sheetName = '') {
     .filter(record => !isEmptyRecord(record)); // Filter empty records
 }
 
+  function excelSerialToDate(n) {
+    // Excel serial date -> JS Date (Excel "day 1" = 1899-12-31, with the 1900 leap-year bug).
+    // Common, practical conversion:
+    const utcDays = Math.floor(n - 25569); // 25569 = days between 1899-12-30 and 1970-01-01
+    const utcMs = utcDays * 86400 * 1000;
+    const date = new Date(utcMs);
+    return isNaN(date.getTime()) ? null : date;
+  }
+
+  function parseExcelDateAny(v) {
+    if (v == null || v === "") return null;
+
+    // Already a Date
+    if (v instanceof Date && !isNaN(v.getTime())) return v;
+
+    // Excel serial number
+    if (typeof v === "number" && Number.isFinite(v)) {
+      return excelSerialToDate(v);
+    }
+
+    const s = String(v).trim();
+    if (!s) return null;
+
+    // Try native parse
+    let d = new Date(s);
+    if (!isNaN(d.getTime())) return d;
+
+    // Try D/M/Y or M/D/Y, same logic you had, but works for any string
+    const parts = s.split(/[\/\-]/);
+    if (parts.length >= 3) {
+      let month, day, year;
+
+      if (parts[0].length === 4) {
+        // YYYY-MM-DD
+        year = parseInt(parts[0], 10);
+        month = parseInt(parts[1], 10) - 1;
+        day = parseInt(parts[2], 10);
+      } else {
+        const first = parseInt(parts[0], 10);
+        const second = parseInt(parts[1], 10);
+        const third = parseInt(parts[2], 10);
+
+        if (first > 12 && second <= 12) {
+          // D/M/Y
+          day = first;
+          month = second - 1;
+          year = third;
+        } else {
+          // M/D/Y (fallback)
+          month = first - 1;
+          day = second;
+          year = third;
+        }
+
+        if (year < 100) year = year >= 50 ? 1900 + year : 2000 + year;
+      }
+
+      d = new Date(year, month, day);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    return null;
+  }
+
+  function addMonthsSafe(date, months) {
+    const d = new Date(date.getTime());
+    const day = d.getDate();
+    d.setDate(1);
+    d.setMonth(d.getMonth() + months);
+    const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    d.setDate(Math.min(day, lastDay));
+    return d;
+  }
+
+  function toPeriodKey(date, monthNames) {
+    if (!(date instanceof Date) || isNaN(date.getTime())) return "";
+    const y = date.getFullYear();
+    const m = monthNames[date.getMonth()]; // must match your monthsToDisplay labels
+    return `${y}_${m}`;
+  }
+
+  // Lead-time months per your rule:
+  function leadTimeMonthsForCountry(countryCode) {
+    const c = String(countryCode || "").toLowerCase();
+
+    // AU market = 1 month
+    if (c === "au" || c === "au-b" || c === "au-c") return 1;
+
+    // USA = 2 months
+    if (c === "usa") return 2;
+
+    // EU (example Ireland) = 3 months
+    // You can expand this list if needed.
+    if (c === "ire") return 3;
+
+    // safe fallback (choose what you prefer)
+    return 2;
+  }
+
+  function caseSizeToUnitFactor(caseSizeRaw) {
+    const n = Number(String(caseSizeRaw || "").replace(/[^\d.]/g, ""));
+    if (!Number.isFinite(n) || n <= 0) return 1; // default assume 12pk
+    // 12 pack = 1 unit, 6 pack = 0.5 unit, etc.
+    return n / 12;
+  }
 
 /**
  * Normalizes exports data from Excel file.
@@ -1347,10 +1566,13 @@ export function normalizeSalesData(records, sheetName = '') {
  * @param {string} sheetName - Name of the sheet
  * @returns {Array} - Normalized records with Stock and cases fields
  */
-export function normalizeExportsData(records, sheetName = '') {
+export function normalizeExportsData(records, sheetName = '', monthNames = [
+  "January","February","March","April","May","June","July","August","September","October","November","December"
+]) {
   if (!Array.isArray(records) || records.length === 0) return [];
-  
+
   const normalized = [];
+
   
   // Find the row with "Company" or "Customer" header
   let headerRowIndex = -1;
@@ -1463,206 +1685,159 @@ export function normalizeExportsData(records, sheetName = '') {
     
     // Find all required columns
     const productDescCol = findColumn(['Product Description', 'Stock', 'Product Description (SKU)', 'Product', 'SKU', 'Item', 'Code']);
-    const customerCol = findColumn(['Company', 'Customer', 'Distributor']);
-    const casesCol = findColumn(['Cases', 'Quantity', 'Qty', 'Cartons', 'Units']);
-    const statusCol = findColumn(['Status', 'Order Status', 'Shipment Status']);
-    const dateShippedCol = findColumn(['Shipped from WWM', 'Date Shipped', 'Shipped Date', 'Shipped from', 'Shipped']);
-    const dateArrivalCol = findColumn([
-      'Export Entry sent to WWM',
-      'Export Entry',
-      'Date of Arrival', 
-      'Arrival Date', 
-      'Arrived Date', 
-      'Received Date', 
-      'Date Arrival',
-      'Export Entry sent',
-      'Entry sent to WWM',
-      'Entry sent',
-      'WWM Entry',
-      'Entry Sent to WWM'
-    ]);
-    const freightForwarderCol = findColumn(['Freight Forwarder', 'Freight', 'Forwarder', 'Carrier', 'Shipping Company']);
+    const customerCol    = findColumn(['Company', 'Customer', 'Distributor']);
+    const casesCol       = findColumn(['Cases']);
+    const statusCol      = findColumn(['Status', 'Order Status', 'Shipment Status']);
 
-    // Process data rows
+    // Prefer Departing NZ first
+    const departingNZCol = findColumn(["Departing NZ", "Departing", "Departure", "ETD"]);
+    const shippedFromWWMCol = findColumn(["Shipped from WWM", "Date Shipped", "Shipped Date", "Shipped from", "Shipped"]);
+
+    const dateShippedCol = departingNZCol || shippedFromWWMCol;
+
+    const freightForwarderCol = findColumn(['Freight Forwarder','Freight','Forwarder','Carrier','Shipping Company']);
+
+    // NEW: pull case size if present (your column N)
+    const caseSizeCol = findColumn(['Case Size', 'CaseSize', 'Pack', 'Pack Size']);
+ // -----------------------
+    // Forward-fill context
+    // -----------------------
+    let currentCustomer = "";
+    let currentDateShippedRaw = null;
+    let currentDateShippedParsed = null;
+
+    // DEBUG counters
+    const debugBuckets = new Map(); // key: arrivalPeriodKey, value: total units
+
     for (let i = headerRowIndex + 1; i < records.length; i++) {
       const row = records[i];
-      if (!row || typeof row !== 'object') continue;
-      
-      const productDesc = productDescCol ? String(row[productDescCol] || '').trim() : '';
-      const customer = customerCol ? String(row[customerCol] || '').trim() : '';
-      const cases = casesCol ? parseFloat(String(row[casesCol] || '0').replace(/,/g, '')) : 0;
-      const status = statusCol ? String(row[statusCol] || '').trim().toLowerCase() : '';
-      
-      // Get date values - handle both key-based and value-based column access
-      let dateShipped = '';
-      if (dateShippedCol) {
-        // Try accessing by the key directly first
-        dateShipped = String(row[dateShippedCol] || '').trim();
-        // If empty, try accessing by header value (in case headers are used as keys)
-        if (!dateShipped && headers[dateShippedCol]) {
-          const headerVal = String(headers[dateShippedCol] || '').trim();
-          dateShipped = String(row[headerVal] || '').trim();
+      if (!row || typeof row !== "object") continue;
+
+      // Read raw “order header” values even if this row has no product
+      const rawCustomer = customerCol ? String(row[customerCol] || "").trim() : "";
+      let rawDateShipped = dateShippedCol ? (row[dateShippedCol] ?? "") : "";
+
+      // Update forward-fill context when present
+      if (rawCustomer) currentCustomer = rawCustomer;
+
+      // If shipping date cell is populated (string/number/date), update context
+      if (rawDateShipped !== "" && rawDateShipped != null) {
+        const parsed = parseExcelDateAny(rawDateShipped);
+        if (parsed) {
+          currentDateShippedRaw = rawDateShipped;
+          currentDateShippedParsed = parsed;
         }
       }
-      
-      let dateArrival = '';
-      if (dateArrivalCol) {
-        // Try accessing by the key directly first
-        dateArrival = String(row[dateArrivalCol] || '').trim();
-        // If empty, try accessing by header value (in case headers are used as keys)
-        if (!dateArrival && headers[dateArrivalCol]) {
-          const headerVal = String(headers[dateArrivalCol] || '').trim();
-          dateArrival = String(row[headerVal] || '').trim();
-        }
-        // Additional fallback: search for any column with matching header text
-        if (!dateArrival) {
-          for (const [key, val] of Object.entries(headers)) {
-            const headerText = String(val || '').toUpperCase().trim();
-            if (headerText.includes('EXPORT ENTRY') && headerText.includes('WWM')) {
-              dateArrival = String(row[key] || '').trim();
-              if (dateArrival) break;
-            }
-          }
-        }
-      }
-      
-      const freightForwarder = freightForwarderCol ? String(row[freightForwarderCol] || '').trim() : '';
-      
+
+      // Now process wine lines
+      const productDesc = productDescCol ? String(row[productDescCol] || "").trim() : "";
+      const casesRaw = casesCol ? String(row[casesCol] || "0").replace(/,/g, "") : "0";
+      const cases = parseFloat(casesRaw) || 0;
+
       if (!productDesc || cases <= 0) continue;
 
+      const status = statusCol ? String(row[statusCol] || "").trim().toLowerCase() : "";
+      const freightForwarder = freightForwarderCol ? String(row[freightForwarderCol] || "").trim() : "";
+
+      // Use forward-filled customer/date shipped if missing on wine line
+      const customer = rawCustomer || currentCustomer || sheetName;
+
+      const shippedDateObj = currentDateShippedParsed; // forward-filled parsed Date
+      const dateShippedOut = shippedDateObj ? shippedDateObj.toISOString().slice(0, 10) : "";
+
+ 
       // Parse Product Description (SKU)
       const skuParts = parseProductSKU(productDesc);
 
-      // Always compute BrandCode safely
       const brandCode = normalizeBrandToCode(
         skuParts.brandCode || skuParts.brand || row.Brand || productDesc
       );
-
       const brandDisplay = BRAND_NAME_MAP[brandCode] || (skuParts.brand || row.Brand || "");
 
-            
-    
-
-      
-      // Helper function to parse dates from various Excel formats
-      const parseDate = (dateStr) => {
-        if (!dateStr || typeof dateStr !== 'string') return null;
-        
-        const cleaned = dateStr.trim();
-        if (!cleaned) return null;
-        
-        // Try standard Date parsing first
-        let date = new Date(cleaned);
-        if (!isNaN(date.getTime())) {
-          return date;
-        }
-        
-        // Try parsing formats like "2/10/25", "2/10/2025", "10/2/25", "10/2/2025"
-        const parts = cleaned.split(/[\/\-]/);
-        if (parts.length >= 3) {
-          let month, day, year;
-          
-          // Determine format: US format (M/D/Y) vs ISO (Y-M-D)
-          if (parts[0].length === 4) {
-            // ISO format: YYYY-MM-DD
-            year = parseInt(parts[0]);
-            month = parseInt(parts[1]) - 1; // Month is 0-indexed
-            day = parseInt(parts[2]);
-          } else {
-            // US format: M/D/Y or D/M/Y (try both)
-            const first = parseInt(parts[0]);
-            const second = parseInt(parts[1]);
-            const third = parseInt(parts[2]);
-            
-            // If first part > 12, it's likely D/M/Y format
-            if (first > 12 && second <= 12) {
-              day = first;
-              month = second - 1;
-              year = third;
-            } else {
-              // Assume M/D/Y format
-              month = first - 1;
-              day = second;
-              year = third;
-            }
-            
-            // Handle 2-digit years
-            if (year < 100) {
-              year = year >= 50 ? 1900 + year : 2000 + year;
-            }
-          }
-          
-          date = new Date(year, month, day);
-          if (!isNaN(date.getTime())) {
-            return date;
-          }
-        }
-        
-        return null;
-      };
-      
-      // Parse dates
-      const shippedDate = dateShipped ? parseDate(dateShipped) : null;
-      const arrivalDate = dateArrival ? parseDate(dateArrival) : null;
-      
-      // Calculate shipping time in days
-      let shippingDays = null;
-      let daysInTransit = null;
-      
-      if (shippedDate && arrivalDate) {
-        // Both dates available: calculate total shipping days
-        shippingDays = Math.ceil((arrivalDate - shippedDate) / (1000 * 60 * 60 * 24));
-      } else if (shippedDate) {
-        // Only shipped date available: calculate days since shipped (currently in transit)
-        const now = new Date();
-        daysInTransit = Math.ceil((now - shippedDate) / (1000 * 60 * 60 * 24));
-        // Use daysInTransit as shippingDays for items currently in transit
-        shippingDays = daysInTransit;
-      }
-      
-      // Get country code from company name using the mapping
-      // Fallback to "nzl" if no match found (default for exports from New Zealand)
+      // Country from company mapping
       const countryCode = getCountryFromCompany(customer) || "nzl";
-      
+
+      // Convert cases into 12pk units using case size
+      const caseSizeVal = caseSizeCol ? row[caseSizeCol] : null;
+      const factor = caseSizeToUnitFactor(caseSizeVal); // 12 -> 1, 6 -> 0.5
+      const casesUnits = cases * factor;
+
+      // NEW: month bucketing
+      const shipmentPeriodKey = shippedDateObj ? toPeriodKey(shippedDateObj, monthNames) : "";
+      const leadMonths = leadTimeMonthsForCountry(countryCode);
+      const arrivalPeriodKey = shippedDateObj ? toPeriodKey(addMonthsSafe(shippedDateObj, leadMonths), monthNames) : "";
+
+      // DEBUG: show first ~30 wine lines and any missing shipped dates
+      if (i < headerRowIndex + 40) {
+        console.log("[EXPORT LINE]", {
+          i,
+          customer,
+          countryCode,
+          productDesc,
+          casesRaw,
+          caseSize: caseSizeVal,
+          casesUnits,
+          shippedDateObj: shippedDateObj ? shippedDateObj.toDateString() : null,
+          shipmentPeriodKey,
+          arrivalPeriodKey,
+          leadMonths,
+          status
+        });
+      }
+      if (!shippedDateObj) {
+        console.warn("[EXPORT WARN] wine line has NO shipped date after forward-fill", {
+          i, customer, productDesc, casesRaw
+        });
+      }
+
+      // Track bucket totals (sanity)
+      if (arrivalPeriodKey) {
+        debugBuckets.set(arrivalPeriodKey, (debugBuckets.get(arrivalPeriodKey) || 0) + casesUnits);
+      }
+
       normalized.push({
-        // Product information
         Stock: productDesc,
         ProductDescription: productDesc,
-        ProductName: skuParts.brand ? `${skuParts.brand} ${skuParts.variety}`.trim() : '',
-        
-        // SKU components
+        ProductName: skuParts.brand ? `${skuParts.brand} ${skuParts.variety}`.trim() : "",
+
         Brand: brandDisplay,
         BrandCode: brandCode,
         Vintage: skuParts.vintage,
         Variety: skuParts.variety,
         VarietyCode: skuParts.varietyCode,
-        Market: skuParts.market, // Normalized country code
+        Market: skuParts.market,
         MarketCode: skuParts.marketCode,
-        
-        // Order information
-        Customer: customer || sheetName,
-        Company: customer || sheetName, // For backward compatibility
-        cases: cases,
+
+        Customer: customer,
+        Company: customer,
+        cases: casesUnits,          // IMPORTANT: store as 12pk units now
+        _casesRaw: cases,           // optional: raw cases before unit conversion
+        _caseSize: caseSizeVal,     // optional
         Status: status,
-        
-        // Dates and shipping
-        DateShipped: dateShipped,
-        DateArrival: dateArrival,
-        ShippingDays: shippingDays,
-        DaysInTransit: daysInTransit, // Days since shipped (for items currently in transit)
+
+        DateShipped: dateShippedOut,  // stable string
+
+        ShipmentPeriodKey: shipmentPeriodKey,
+        ArrivalPeriodKey: arrivalPeriodKey,
+        LeadMonths: leadMonths,
+
         FreightForwarder: freightForwarder,
-        
-        // For Dashboard compatibility
-        AdditionalAttribute2: countryCode, // Normalized country code from company mapping
+
+        AdditionalAttribute2: countryCode,
         AdditionalAttribute3: `${skuParts.vintage}`.toUpperCase(),
-        
+
         _sheetName: sheetName,
         _originalData: row
       });
     }
+
+    // BIG sanity log: totals by arrival month
+    console.log("[EXPORT BUCKETS] total units by arrival month:");
+    console.table(
+      Array.from(debugBuckets.entries()).map(([k, v]) => ({ periodKey: k, units12pk: Math.round(v * 100) / 100 }))
+    );
   }
-  
-  // Filter out empty records before returning
+
   return filterEmptyRecords(normalized);
 }
 
@@ -1841,6 +2016,12 @@ export function normalizeWarehouseStockData(records, sheetName = '') {
  * - Keeps legacy behavior for NZ / USA / AU-B / IRE / other sheets
  * - Adds AU-C "pivot" support (multiple DC/state columns) WITHOUT breaking Brand filtering
  */
+/**
+ * Normalize Distributor Stock On Hand data (DSOH)
+ * - Keeps legacy behavior for NZ / USA / AU-B / IRE / other sheets
+ * - Adds AU-C "pivot" support (multiple DC/state columns) WITHOUT breaking Brand filtering
+ * - ✅ NZ ONLY: if Pack column exists and is 6, converts OnHand to 12pk units by dividing by 2
+ */
 export function normalizeDistributorStockOnHandData(records, sheetName = "") {
   if (!Array.isArray(records) || records.length === 0) return [];
 
@@ -1862,11 +2043,79 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
   const headerKeys = Object.keys(firstRecord);
 
   // ---------- helpers ----------
+    // ---------- NZ Pack detection (robust) ----------
+    const detectNZPackCol = ({
+      records,
+      headerKeys,
+      findColumn,
+      productCol,
+      skuCol,
+      countryCol,
+      wineTypeCol,
+      onHandCol,
+    }) => {
+      // 1) Best case: Pack is actually a key
+      let col = findColumn(["Pack", "PACK", "Pk", "PK", "Pack Size", "Case Size", "CaseSize"]);
+      if (col) return col;
+  
+      // 2) Header row might be VALUES (keys are Column_1, Column_2, ...)
+      const headerRow =
+        records.slice(0, 15).find(r =>
+          r && typeof r === "object" &&
+          Object.values(r).some(v => String(v || "").toUpperCase().includes("PACK"))
+        ) || null;
+  
+      if (headerRow) {
+        const k = Object.keys(headerRow).find(k =>
+          String(headerRow[k] || "").toUpperCase().includes("PACK")
+        );
+        if (k) return k;
+      }
+  
+      // 3) Heuristic: pick the column (excluding known ones) that looks like mostly 6/12
+      let bestKey = null;
+      let bestScore = 0;
+  
+      for (const k of headerKeys) {
+        if (
+          k === productCol ||
+          k === skuCol ||
+          k === countryCol ||
+          k === wineTypeCol ||
+          k === onHandCol
+        ) continue;
+  
+        let seen = 0;
+        let hits = 0;
+  
+        for (let i = 0; i < Math.min(records.length, 60); i++) {
+          const v = records[i]?.[k];
+          if (v == null || String(v).trim() === "") continue;
+  
+          seen++;
+          const s = String(v).trim().toUpperCase();
+          if (s === "6" || s === "12" || s.includes("6") || s.includes("12")) {
+            // keep it strict-ish: only count if it's basically "6" or "12" (or "6PK"/"12PK")
+            const n = parseInt(s.replace(/[^\d]/g, ""), 10);
+            if (n === 6 || n === 12) hits++;
+          }
+        }
+  
+        const score = seen ? hits / seen : 0;
+        if (hits >= 6 && score > bestScore) {
+          bestScore = score;
+          bestKey = k;
+        }
+      }
+  
+      return bestKey;
+    };
+  
   const parseNumericValue = (value) => {
     if (value === undefined || value === null || value === "") return 0;
     const cleaned = String(value)
-      .replace(/[$€£¥,]/g, "")     // remove currency + commas
-      .replace(/[^\d.-]/g, "")     // keep digits/.- only
+      .replace(/[$€£¥,]/g, "")
+      .replace(/[^\d.-]/g, "")
       .trim();
     const parsed = cleaned !== "" && !isNaN(cleaned) ? parseFloat(cleaned) : 0;
     return Number.isFinite(parsed) ? parsed : 0;
@@ -1913,13 +2162,10 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
     looksLikeAUCByHeaders;
 
   if (isAUC) {
-    // AU-C format often looks like:
-    // Item | NSW | VIC | QLD | SA | WA  (or "Sydney DC (NSW)" etc)
     const itemCol =
       findColumn(["Item", "Product", "Description", "Product Description", "Wine", "Wine Name"]) ||
       headerKeys[0];
 
-    // pick columns that represent DC/state buckets
     const dcCols = headerKeys
       .filter((k) => k !== itemCol)
       .filter((k) => {
@@ -1934,7 +2180,6 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
       const item = String(row[itemCol] ?? "").trim();
       if (!item) continue;
 
-      // skip obvious subheader rows (these appear in some AU-C exports)
       const upperItem = item.toUpperCase();
       if (
         upperItem.includes("CURRENT QUANTITY") ||
@@ -1944,10 +2189,8 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
         continue;
       }
 
-      // Parse SKU/components from the item text so Brand filtering still works
       const skuParts = parseProductSKU(item);
 
-      // Derive wine type code (SAB/PIN/etc) similar to old flow
       let wineTypeCode = normalizeWineTypeToCode(item);
       if (!wineTypeCode || wineTypeCode.length > 10) {
         wineTypeCode = normalizeWineTypeToCode(skuParts.varietyCode || skuParts.fullSKU || item);
@@ -1970,24 +2213,19 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
 
       for (const c of dcCols) {
         const onHand = parseNumericValue(row[c]);
-
-        // keep dataset clean (pivot sheets can have tons of zeros)
         if (!(onHand > 0)) continue;
 
         const state = extractStateFromDCLabel(c) || String(c || "").trim();
-
         const normMarket = normalizeCountryCode("AU-C");
 
         normalized.push({
           Location: state,
           Distributor: distributorName,
 
-          // product fields (keep useful text for brand parsing fallbacks)
           Product: item,
           ProductName: item,
           Code: skuParts.fullSKU || item,
 
-          // ✅ brand fields populated so brand filtering works
           Brand: skuParts.brand,
           BrandCode: skuParts.brandCode,
           Vintage: skuParts.vintage,
@@ -2051,7 +2289,23 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
   let onHandCol = null;
   let wineTypeCol = null;
 
-  if (upperSheetName === "NZ" || upperSheetName === "NZL" || sheetName.includes("NZ")) {
+  const isNZ = upperSheetName === "NZ" || upperSheetName === "NZL" || sheetName.includes("NZ");
+  // Detect pack col only for NZ DSOH
+  const packCol = isNZ
+    ? detectNZPackCol({
+        records,
+        headerKeys,
+        findColumn,
+        productCol,
+        skuCol,
+        countryCol,
+        wineTypeCol,
+        onHandCol,
+      })
+    : null;
+
+
+  if (isNZ) {
     if (headerKeys.length > 5) {
       wineTypeCol = headerKeys[1];
       onHandCol = headerKeys[4];
@@ -2120,7 +2374,37 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
 
     if (!product && !sku) continue;
 
-    const onHand = onHandCol ? parseNumericValue(row[onHandCol]) : 0;
+    const onHandRaw = onHandCol ? parseNumericValue(row[onHandCol]) : 0;
+
+    let onHand = onHandRaw;
+
+    // ✅ NZ only: convert 6-pack to 12-pack units
+    if (isNZ && packCol) {
+      const packRaw = row?.[packCol];
+      const packNum = parseInt(String(packRaw ?? "").replace(/[^\d]/g, ""), 10);
+
+      if (packNum === 6) onHand = onHandRaw / 2;
+      else if (packNum === 12) onHand = onHandRaw;
+
+      // DEBUG sample
+      if (i < 20) {
+        console.log("[NZ SOH PACK]", {
+          i,
+          packCol,
+          packRaw,
+          packNum,
+          onHand_raw: onHandRaw,
+          onHand_12pk: onHand,
+        });
+      }
+    } else if (isNZ && !packCol && i < 3) {
+      console.warn("[NZ SOH PACK] cannot convert (no packCol)", {
+        i,
+        onHand_raw: onHandRaw,
+      });
+    }
+
+
     const wineType = wineTypeCol ? String(row[wineTypeCol] || "").trim() : "";
 
     // USA: state from 2nd column index 1 (legacy)

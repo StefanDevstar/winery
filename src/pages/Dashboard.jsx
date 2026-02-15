@@ -11,6 +11,29 @@ import DistributorMap from "../components/dashboard/DistributorMap";
 import AlertsFeed from "../components/dashboard/AlertsFeed";
 import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
+import { summarizeWarehouseMagnumAndCS } from "@/lib/utils";
+
+
+const DEBUG_TRANSIT = true;
+
+const tlog = (...args) => DEBUG_TRANSIT && console.log(...args);
+
+const tgroup = (label) => DEBUG_TRANSIT && console.groupCollapsed(label);
+const tgroupEnd = () => DEBUG_TRANSIT && console.groupEnd();
+
+function pick(obj, keys) {
+  const out = {};
+  for (const k of keys) out[k] = obj?.[k];
+  return out;
+}
+
+function findKeysLike(rows, pattern) {
+  const r0 = rows?.[0] || {};
+  return Object.keys(r0).filter(k => pattern.test(k));
+}
+
+
+
 
 // ───────── AU-B state helpers ─────────
 function inferAUBStateFromDistributorHeader(v) {
@@ -458,6 +481,108 @@ function parseDate(dateStr) {
 }
 
 export default function Dashboard() {
+
+  const didAutoSetDateRangeRef = React.useRef(false);
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+function rowToDate(r) {
+  if (!r) return null;
+
+  // 1) direct date fields
+  const raw = r.Date ?? r.date ?? r.SaleDate ?? r.saleDate;
+  if (raw) {
+    const d = raw instanceof Date ? raw : new Date(String(raw).replace(/\//g, "-"));
+    if (!isNaN(d)) return d;
+  }
+
+  // 2) "Period" like "Jan 24" or "Jan 2024"
+  const period = r.Period ?? r.period ?? r.MonthYear ?? r.monthYear;
+  if (period) {
+    const s = String(period).trim();
+    const parts = s.split(/\s+/); // ["Jan","24"] or ["Jan","2024"]
+    if (parts.length >= 2) {
+      const m = parts[0].slice(0,3);
+      const mi = MONTHS.indexOf(m);
+      if (mi >= 0) {
+        let y = parts[1];
+        // "24" -> 2024
+        const year = y.length === 2 ? Number("20" + y) : Number(y);
+        if (Number.isFinite(year)) return new Date(year, mi, 1);
+      }
+    }
+  }
+
+  // 3) separate Month/Year fields
+  const m2 = r.Month ?? r.month;
+  const y2 = r.Year ?? r.year;
+  if (m2 && y2) {
+    const m = String(m2).slice(0,3);
+    const mi = MONTHS.indexOf(m);
+    const year = Number(String(y2).length === 2 ? "20" + y2 : y2);
+    if (mi >= 0 && Number.isFinite(year)) return new Date(year, mi, 1);
+  }
+
+  return null;
+}
+
+function getMinMaxDates(rows) {
+  let min = null;
+  let max = null;
+
+  for (const r of rows || []) {
+    const d = rowToDate(r);
+    if (!d) continue;
+    if (!min || d < min) min = d;
+    if (!max || d > max) max = d;
+  }
+
+  return { min, max };
+}
+
+  // ✅ Warehouse stock rows (aggregated from localStorage, same pattern as your projection code)
+const warehouseStockRows = React.useMemo(() => {
+  let rows = [];
+
+  try {
+    // If you store a single combined key somewhere, use it here first (optional)
+    const direct = localStorage.getItem("vc_warehouse_stock_data");
+    if (direct) {
+      const parsed = JSON.parse(direct);
+      if (Array.isArray(parsed)) rows = parsed;
+    }
+
+    // Otherwise aggregate per-sheet keys using metadata (this matches your projection logic)
+    if (rows.length === 0) {
+      const metaRaw = localStorage.getItem("vc_warehouse_stock_metadata");
+      if (metaRaw) {
+        const meta = JSON.parse(metaRaw);
+        const sheetNames = Array.isArray(meta?.sheetNames) ? meta.sheetNames : [];
+
+        for (const sn of sheetNames) {
+          const key = `vc_warehouse_stock_data_${sn}`;
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
+
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) rows.push(...parsed);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[Dashboard] failed to read warehouse stock from localStorage:", err);
+  }
+
+  console.log("[Dashboard] warehouseStockRows:", rows.length, rows[0]);
+  return rows;
+}, []); // if you have a refreshKey/state, add it in deps
+
+const magnumCsTable = React.useMemo(() => {
+  const out = summarizeWarehouseMagnumAndCS(warehouseStockRows);
+  console.log("[Dashboard] magnumCsTable:", out);
+  return out;
+}, [warehouseStockRows]);
+
+  
   const [filters, setFilters] = useState({
     country: "usa", // Default to New Zealand (first in the list)
     distributor: "all",
@@ -568,6 +693,39 @@ export default function Dashboard() {
             }
           }
 
+          tgroup("🚚 [TRANSIT] RAW exportsData snapshot");
+
+          tlog("[RAW exportsData] rows:", Array.isArray(exportsData) ? exportsData.length : exportsData);
+
+          if (Array.isArray(exportsData) && exportsData.length) {
+            const r0 = exportsData[0];
+            tlog("[RAW exportsData] first row keys:", Object.keys(r0));
+            
+            // Find any transit-ish columns automatically
+            const transitCols = findKeysLike(exportsData, /transit|in\s*transit|eta|etd|ship|vessel|container|arrival|departure|dispatch|tracking/i);
+            tlog("[RAW exportsData] transit-ish columns found:", transitCols);
+
+            // Show a trimmed view (edit these fields if you know exact column names)
+            console.table(
+              exportsData.slice(0, 10).map((r, i) => ({
+                i,
+                ...pick(r, [
+                  "Market", "MarketCode", "AdditionalAttribute2",
+                  "Brand", "BrandCode",
+                  "Variety", "VarietyCode",
+                  "Product", "ProductName", "Code",
+                  "Date", "Month", "Year",
+                  "Quantity", "Qty", "Cases", "Bottles",
+                  "InTransit", "In Transit", "inTransit", "Transit",
+                  "ETA", "ETD",
+                  "_sheetName"
+                ])
+              }))
+            );
+          }
+
+          tgroupEnd();
+
           let distributorStockOnHand = loadDistributorStockOnHand();
 
       
@@ -610,6 +768,23 @@ export default function Dashboard() {
               }
             } catch (e) {
               // Error parsing sales metadata
+            }
+          }
+
+          // ✅ Auto-set date range to full available history (oldest -> newest), once
+          if (!didAutoSetDateRangeRef.current && salesData.length > 0) {
+            const { min, max } = getMinMaxDates(salesData);
+
+            if (min && max) {
+              const from = new Date(min.getFullYear(), min.getMonth(), 1);
+              const to = new Date(max.getFullYear(), max.getMonth() + 1, 0); // end of max month
+
+              setFilters(prev => ({
+                ...prev,
+                dateRange: { from, to },
+              }));
+
+              didAutoSetDateRangeRef.current = true;
             }
           }
           
@@ -770,6 +945,8 @@ export default function Dashboard() {
           distributorStockOnHand = divideBy12IfIrelandOrAuC(distributorStockOnHand, countryFilter);
           salesData = divideBy12IfIrelandOrAuC(salesData, countryFilter);
 
+          
+
           // ───────── DEBUG: AU-C sales brand filter sanity ─────────
           if (countryFilter === "au-c") {
             const aucRows = (salesData || []).filter(r =>
@@ -805,6 +982,8 @@ export default function Dashboard() {
         });
 
         const aubColMap = buildAubDsohColMap(aubRows2);
+
+      
 
         // ───────── Pre-fix distributor stock rows BEFORE filtering ─────────
         const distributorStockOnHandFixed = (distributorStockOnHand || []).map((row) => {
@@ -880,6 +1059,8 @@ export default function Dashboard() {
 
           return row;
         });
+
+        
 
         // ───────── Filter Distributor Stock On Hand ─────────
         const filteredDistributorStockOnHand = [];
@@ -1901,21 +2082,38 @@ export default function Dashboard() {
             if (!wineCode) continue;
             exportsByWineCode.set(wineCode, (exportsByWineCode.get(wineCode) || 0) + (parseFloat(e.cases) || 0));
           }
-        // ───────── Build Time Range ─────────
-        const now = new Date();
-        const currentYear = now.getFullYear().toString();
+       // ───────── Build Time Range ─────────
+        const from = filters?.dateRange?.from;
+        const to = filters?.dateRange?.to;
+
+        const base = (filters.viewMode === "forward" && to)
+          ? new Date(to)                 // start forward from end of selected range
+          : new Date();                  // fallback
+
+        base.setDate(1); // normalize
+
         const monthsToDisplay =
           filters.viewMode === "forward"
-            ? monthNames.slice(0, filters.forwardLookingMonths).map((m) => ({
-                month: m,
-                year: currentYear,
-              }))
-            : (() => {
-                const from = filters.dateRange.from;
-                const to = filters.dateRange.to;
-                const cur = new Date(from);
+            ? (() => {
                 const list = [];
-                while (cur <= to) {
+                const cur = new Date(base);
+                for (let i = 0; i < (filters.forwardLookingMonths || 3); i++) {
+                  list.push({
+                    month: monthNames[cur.getMonth()],
+                    year: cur.getFullYear().toString(),
+                  });
+                  cur.setMonth(cur.getMonth() + 1);
+                }
+                return list;
+              })()
+            : (() => {
+                const cur = new Date(from);
+                cur.setDate(1);
+                const end = new Date(to);
+                end.setDate(1);
+
+                const list = [];
+                while (cur <= end) {
                   list.push({
                     month: monthNames[cur.getMonth()],
                     year: cur.getFullYear().toString(),
@@ -1924,7 +2122,6 @@ export default function Dashboard() {
                 }
                 return list;
               })();
-
         // ───────── Sales Prediction Calculation from Depletion Summary ─────────
         // SIMPLE FORMULA: Average = Sum / Count
         // Sum = total sales of cases in the observed period
@@ -2229,37 +2426,37 @@ export default function Dashboard() {
         const currentDate = new Date();
         const transitCurrentYear = currentDate.getFullYear();
         const transitCurrentMonth = currentDate.getMonth();
+        // After building transitByMonth map
         
         // Process each export to determine which month it should be allocated to
         for (let i = 0; i < filteredExports.length; i++) {
           const e = filteredExports[i];
-          const dateShipped = e.DateShipped ? parseDate(e.DateShipped.toString().trim()) : null;
-          const dateArrival = e.DateArrival ? parseDate(e.DateArrival.toString().trim()) : null;
-          
-          // Determine expected arrival month
-          let arrivalMonth = null;
-          let arrivalYear = null;
-          
-          if (dateArrival) {
-            // Use actual arrival date
-            arrivalMonth = dateArrival.getMonth();
-            arrivalYear = dateArrival.getFullYear();
-          } else if (dateShipped) {
-            // Estimate arrival based on shipping time
-            // Use average shipping time from ShippingDays if available, otherwise estimate
-            const shippingDays = e.ShippingDays || e.DaysInTransit || 30; // Default 30 days
-            const estimatedArrival = new Date(dateShipped);
-            estimatedArrival.setDate(estimatedArrival.getDate() + Math.ceil(shippingDays));
-            arrivalMonth = estimatedArrival.getMonth();
-            arrivalYear = estimatedArrival.getFullYear();
-          } else {
-            // No date info: assume current month if status indicates in transit
-            const status = (e.Status || "").toLowerCase().trim();
-            if (status.includes("transit") || status.includes("waiting")) {
-              arrivalMonth = transitCurrentMonth;
-              arrivalYear = transitCurrentYear;
-            }
+          const dateShipped = e.DateShipped ? parseDate(String(e.DateShipped).trim()) : null;
+          if (!dateShipped) continue; // can't bucket without Departing NZ date
+
+          const rowCountry = normalizeCountryCode(
+            String(e.AdditionalAttribute2 || e.Market || "").trim()
+          ).toLowerCase();
+
+          function leadTimeMonthsForCountry(c) {
+            if (c === "au" || c === "au-b" || c === "au-c") return 1;
+            if (c === "usa") return 2;
+            if (c === "ire" || c === "gb" || c === "nl" || c === "den" || c === "pol" || c === "gr") return 3;
+            return 2; // safe default
           }
+
+          function addMonthsSafe(d, m) {
+            const x = new Date(d);
+            x.setMonth(x.getMonth() + m);
+            return x;
+          }
+
+          const leadMonths = leadTimeMonthsForCountry(rowCountry);
+          const arrivalDate = addMonthsSafe(dateShipped, leadMonths);
+
+          const arrivalMonth = arrivalDate.getMonth();
+          const arrivalYear = arrivalDate.getFullYear();
+
           
           if (arrivalMonth !== null && arrivalYear !== null) {
             // Get distributor and wine code
@@ -2300,6 +2497,19 @@ export default function Dashboard() {
             }
           }
         }
+
+        const dbg = [];
+        for (const [periodKey, m] of transitByMonth.entries()) {
+          let totalUSA = 0;
+          for (const v of m.values()) {
+            if ((v.country || "").toLowerCase() === "usa") totalUSA += (v.inTransit || 0);
+          }
+          dbg.push({ periodKey, totalUSA_12pk: Math.round(totalUSA * 100) / 100 });
+        }
+        dbg.sort((a,b) => a.periodKey.localeCompare(b.periodKey));
+        console.table(dbg);
+
+        
         
         const stockFloatArray = Array.from(stockFloatByDistributorWine.values());
         // Helper function to normalize strings for comparison (used in export inclusion check)
@@ -2555,6 +2765,8 @@ export default function Dashboard() {
         let previousAggregateStockFloat = undefined; // Track previous month's aggregate stock float
         
         const projection = monthsToDisplay.map(({ month, year }, idx) => {
+          const isForward = filters.viewMode === "forward";
+          const isForwardBaseline = isForward && idx === 0; // first forward month on the chart
           // Determine if this period is historical (past) or future
           const periodYear = parseInt(year);
           const periodMonthIndex = monthNames.indexOf(month);
@@ -2568,6 +2780,7 @@ export default function Dashboard() {
           
           // For future periods: Use predictedSales (constant, not cumulative)
           // We'll subtract it from the previous month's stock float
+
           const salesToUse = isHistorical ? actualSalesForPeriod : predictedSales;
 
           // Get transit items for this specific month
@@ -2610,75 +2823,47 @@ export default function Dashboard() {
 
           // Limit to first 1000 items to prevent performance issues with very large datasets
           const limitedStockFloat = monthStockFloatArray;
-          const distributorProjections = limitedStockFloat.map(item => {
-            // Get market for this item
-            const itemMarket = (item.country || "").toLowerCase();
-            
-            // Calculate wine-specific sales for this period
-            // For historical periods: Use actual sales data for this wine/market in this period
-            // For future periods: Use cumulative predicted sales (1x, 2x, 3x, etc.)
-            let wineSalesForPeriod = 0;
-            
-            if (isHistorical) {
-              // For historical periods, get actual sales for this wine/market in this period
-              // We need to get actual sales from filteredStock for this specific period and wine
-              // Since we don't have wine-level historical sales readily available, we'll distribute
-              // the period's actual sales proportionally based on stock float
-              const totalStockForMarket = monthStockFloatArray
-                .filter(i => (i.country || "").toLowerCase() === itemMarket)
-                .reduce((sum, i) => sum + i.totalStockFloat, 0);
-              
-              if (totalStockForMarket > 0 && actualSalesForPeriod > 0) {
-                // Distribute actual sales proportionally based on stock float
-                const wineProportion = item.totalStockFloat / totalStockForMarket;
-                wineSalesForPeriod = actualSalesForPeriod * wineProportion;
-              } else if (actualSalesForPeriod > 0) {
-                // Equal distribution if no stock data
-                const marketItemCount = monthStockFloatArray.filter(i => (i.country || "").toLowerCase() === itemMarket).length;
-                wineSalesForPeriod = marketItemCount > 0 ? actualSalesForPeriod / marketItemCount : 0;
-              }
-            } else {
-              // For future periods: Use predicted sales (constant, same for all months)
-              // Get the pre-calculated monthly predicted sales for this wine
-              const itemKey = `${item.distributor.toLowerCase()}_${item.wineCode}`;
-              wineSalesForPeriod = winePredictedSalesMap.get(itemKey) || 0;
-            }
-            
-            // Stock Float calculation for FORWARD PREDICTIONS:
-            // Formula: Stock Float = Previous Stock Float - predictedSales + Stock in Transit
-            // For historical: Stock Float = Stock - Actual Sales + In Transit
-            // For future: Subtract predictedSales ONCE per month from previous month's stock float
-            let stockFloat = 0;
+          const distributorProjections = limitedStockFloat.map((item) => {
             const itemKey = `${item.distributor.toLowerCase()}_${item.wineCode}`;
-            
+            const isForward = filters.viewMode === "forward";
+            const isForwardBaseline = isForward && idx === 0;
+          
+            // TODO: you still need to compute wineSalesForPeriod properly.
+            // For now, assuming you already set it above this block.
+            let wineSalesForPeriod = 0;
+          
+            let stockFloat;
+          
             if (isHistorical) {
-              // Historical: Stock Float = Stock - Actual Sales + In Transit
+              // Historical: Stock - actualSales + transit
               stockFloat = Math.max(0, item.stock - wineSalesForPeriod + item.inTransit);
             } else {
-              // Future: Get previous month's stock float, subtract predictedSales once, add in-transit
-              const previousStockFloat = cumulativeStockFloatByItem.get(itemKey);
-              if (previousStockFloat !== undefined) {
-                // Month 2+: Stock Float = Previous Stock Float - predictedSales + In Transit
-                stockFloat = Math.max(0, previousStockFloat - wineSalesForPeriod + item.inTransit);
+              if (isForwardBaseline) {
+                // Baseline: show "now" snapshot (no subtraction yet)
+                stockFloat = Math.max(0, item.stock + item.inTransit);
               } else {
-                // Month 1: Stock Float = Stock - predictedSales + In Transit
-                stockFloat = Math.max(0, item.stock - wineSalesForPeriod + item.inTransit);
+                const prev = cumulativeStockFloatByItem.get(itemKey);
+                stockFloat = Math.max(
+                  0,
+                  (prev ?? (item.stock + item.inTransit)) - wineSalesForPeriod + item.inTransit
+                );
               }
-              // Store for next month
-              cumulativeStockFloatByItem.set(itemKey, stockFloat);
             }
-            
+          
+            // store for next month (only matters for forward)
+            cumulativeStockFloatByItem.set(itemKey, stockFloat);
+          
             return {
               distributor: item.distributor,
               wineCode: item.wineCode,
               brand: item.brand,
               variety: item.variety,
               country: item.country,
-              stock: item.stock, // Stock on hand
-              inTransit: item.inTransit, // In-transit cases for this month
-              sales: wineSalesForPeriod, // Actual sales for historical, cumulative predicted sales for future
-              predictedSales: isHistorical ? wineSalesForPeriod : (winePredictedSalesMap.get(`${item.distributor.toLowerCase()}_${item.wineCode}`) || 0), // Monthly predicted sales (for display)
-              stockFloat: stockFloat // Distributor stock on hand - cumulative sales + in-transit
+              stock: item.stock,
+              inTransit: item.inTransit,
+              sales: wineSalesForPeriod,
+              predictedSales: isHistorical ? wineSalesForPeriod : (winePredictedSalesMap.get(itemKey) || 0),
+              stockFloat,
             };
           });
 
@@ -2688,8 +2873,11 @@ export default function Dashboard() {
           
           // For aggregate: Use predictedSales (constant) for future months
           // Historical: use actual sales. Future: use predictedSales (subtract once per month)
-          const totalSalesForPeriod = isHistorical ? actualSalesForPeriod : predictedSales;
-          
+          const totalSalesForPeriod =
+            isHistorical ? actualSalesForPeriod
+            : isForwardBaseline ? 0
+            : predictedSales;
+                    
           // Calculate aggregate stock float
           // For historical: Stock Float = Total Stock - Actual Sales + In Transit
           // For future: Stock Float = Previous Total Stock Float - predictedSales + In Transit
@@ -2703,10 +2891,10 @@ export default function Dashboard() {
               // Month 2+: Stock Float = Previous Stock Float - predictedSales + In Transit
               totalStockFloat = Math.max(0, previousAggregateStockFloat - totalSalesForPeriod + totalInTransit);
             } else {
-              // Month 1: Stock Float = Total Stock - predictedSales + In Transit
-              totalStockFloat = Math.max(0, totalStock - totalSalesForPeriod + totalInTransit);
+              const prev = previousAggregateStockFloat ?? (totalStock + totalInTransit);
+              totalStockFloat = Math.max(0, prev - totalSalesForPeriod + totalInTransit);
             }
-            previousAggregateStockFloat = totalStockFloat; // Update for next iteration
+            previousAggregateStockFloat = totalStockFloat;
           }
 
           return {
@@ -3169,6 +3357,20 @@ export default function Dashboard() {
         console.log("[WAREHOUSE] DG/FG key candidates:", dgHits);
         console.table(dgHits.slice(0, 10));
 
+        function extractMarketToken(s) {
+          const text = String(s || "");
+        
+          // IMPORTANT: check AU-B / AU-C before AU (if you ever add AU later)
+          if (/\bEU\b/i.test(text)) return "EU";
+          if (/\bUSA\b/i.test(text)) return "USA";
+          if (/\bIRE\b|\bIRELAND\b/i.test(text)) return "IRE";
+          if (/\bNZL\b|\bNZ\b/i.test(text)) return "NZL";
+          if (/\bAU[-\s]?B\b|\bAUB\b/i.test(text)) return "AU-B";
+          if (/\bAU[-\s]?C\b|\bAUC\b/i.test(text)) return "AU-C";
+        
+          return ""; // unknown
+        }
+
         function inferWarehouseMarketRaw(item) {
           // 1) primary fields
           const raw =
@@ -3178,7 +3380,11 @@ export default function Dashboard() {
               item?.additionalAttribute2 ||
               "").toString().trim();
         
-          if (raw) return raw;
+          if (raw) {
+            const token = extractMarketToken(raw);
+            if (token) return token;
+            // if raw exists but doesn't include a known token, fall through
+          }
         
           // 2) fallback: look inside description-like fields
           const text = [
@@ -3197,15 +3403,7 @@ export default function Dashboard() {
             .map(v => String(v))
             .join(" ");
         
-          // IMPORTANT: word boundary so we don't match "NEU" etc
-          if (/\bEU\b/i.test(text)) return "EU";
-          if (/\bUSA\b/i.test(text)) return "USA";
-          if (/\bIRE\b|\bIRELAND\b/i.test(text)) return "IRE";
-          if (/\bNZL\b|\bNZ\b/i.test(text)) return "NZL";
-          if (/\bAU[-\s]?B\b|\bAUB\b/i.test(text)) return "AU-B";
-          if (/\bAU[-\s]?C\b|\bAUC\b/i.test(text)) return "AU-C";
-        
-          return ""; // still unknown
+          return extractMarketToken(text);
         }
         
 
@@ -3222,6 +3420,49 @@ export default function Dashboard() {
             dropped_wine: 0,
             kept: 0,
           };
+
+          // ✅ DEBUG: AU-B warehouse stock (before filtering) — no code changes
+const DEBUG_WH_AUB = true;
+
+if (DEBUG_WH_AUB && normalizeCountryCode(countryFilter).toLowerCase() === "au-b") {
+  console.groupCollapsed("🏭 [WH AU-B] BEFORE filter");
+
+  console.log("[WH AU-B] warehouseStockData rows:", warehouseStockData?.length || 0);
+
+  // quick distribution: what markets are present (as inferred)
+  const marketCounts = {};
+  for (const it of (warehouseStockData || [])) {
+    const raw = inferWarehouseMarketRaw(it);
+    const cc = normalizeCountryCode(raw).toLowerCase();
+    marketCounts[cc] = (marketCounts[cc] || 0) + 1;
+  }
+  console.log("[WH AU-B] inferred market counts:", marketCounts);
+
+  // AU-B candidates in raw data (based on inferred market)
+  const aubCandidates = (warehouseStockData || []).filter((it) => {
+    const cc = normalizeCountryCode(inferWarehouseMarketRaw(it)).toLowerCase();
+    return cc === "au-b";
+  });
+
+  console.log("[WH AU-B] raw AU-B candidates:", aubCandidates.length);
+
+  console.table(
+    aubCandidates.slice(0, 25).map((it, i) => ({
+      i,
+      available12pk: getWarehouseAvailable12pk(it),
+      stockType: getWarehouseStockType(it),
+      Code: it?.Code ?? it?.code,
+      ProductName: it?.ProductName ?? it?.productName,
+      VarietyCode: it?.VarietyCode ?? it?.varietyCode,
+      AdditionalAttribute3: it?.AdditionalAttribute3 ?? it?.additionalAttribute3,
+      inferredMarketRaw: inferWarehouseMarketRaw(it),
+      inferredMarketNorm: normalizeCountryCode(inferWarehouseMarketRaw(it)).toLowerCase(),
+      _sheetName: it?._sheetName,
+    }))
+  );
+
+  console.groupEnd();
+}
           
           const filteredWarehouseStock = warehouseStockData.filter(item => {
             // Skip items without stock data
@@ -3330,7 +3571,32 @@ export default function Dashboard() {
             return true;
           });
 
-          
+          // ✅ DEBUG: AU-B warehouse stock (after filtering)
+          if (DEBUG_WH_AUB && normalizeCountryCode(countryFilter).toLowerCase() === "au-b") {
+            console.groupCollapsed("✅ [WH AU-B] AFTER filter");
+
+            console.log("[WH AU-B] filteredWarehouseStock rows:", filteredWarehouseStock?.length || 0);
+            console.log("[WH AU-B] whDbg (drop counters):", whDbg);
+
+            console.table(
+              (filteredWarehouseStock || []).slice(0, 25).map((it, i) => ({
+                i,
+                available12pk: getWarehouseAvailable12pk(it),
+                stockType: getWarehouseStockType(it),
+                Code: it?.Code ?? it?.code,
+                ProductName: it?.ProductName ?? it?.productName,
+                VarietyCode: it?.VarietyCode ?? it?.varietyCode,
+                AdditionalAttribute3: it?.AdditionalAttribute3 ?? it?.additionalAttribute3,
+                inferredMarketRaw: inferWarehouseMarketRaw(it),
+                inferredMarketNorm: normalizeCountryCode(inferWarehouseMarketRaw(it)).toLowerCase(),
+                _sheetName: it?._sheetName,
+              }))
+            );
+
+            console.groupEnd();
+          }
+
+                    
 
           
           
@@ -3684,6 +3950,8 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
     atRiskPrev = 0,
   } = kpiValues;
 
+  
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-white p-3 sm:p-4 md:p-6">
       <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6">
@@ -3692,6 +3960,8 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
             <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
             <span className="hidden sm:inline">Processing data...</span>
             <span className="sm:hidden">Processing...</span>
+
+            
           </div>
         )}
         <FilterBar filters={filters} onFilterChange={handleFilterChange} />
@@ -3744,13 +4014,47 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
             <ForecastAccuracyChart data={forecastAccuracyData} />
             <WarehouseStockProjectionChart data={warehouseStockProjection} />
           </div>
+
           <div className="lg:col-span-1">
             <AlertsFeed alerts={alerts} />
           </div>
         </div>
 
+        {/* ✅ Put the table HERE (outside the chart grid, before DistributorMap) */}
+        {Array.isArray(magnumCsTable) && magnumCsTable.length > 0 && (
+          <div className="mt-4 rounded-xl border bg-white p-4">
+            <div className="text-sm font-semibold mb-3">
+              Warehouse: Magnum & C/S (12pk units)
+            </div>
+
+            <div className="overflow-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b">
+                    <th className="text-left py-2 pr-3">Wine</th>
+                    <th className="text-right py-2 px-3">C/S (12pk)</th>
+                    <th className="text-right py-2 px-3">Magnum (12pk)</th>
+                    <th className="text-right py-2 pl-3">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {magnumCsTable.map((r) => (
+                    <tr key={r.wine} className="border-b last:border-0">
+                      <td className="py-2 pr-3 font-medium">{r.wine}</td>
+                      <td className="py-2 px-3 text-right">{r.cs_12pk}</td>
+                      <td className="py-2 px-3 text-right">{r.magnum_12pk}</td>
+                      <td className="py-2 pl-3 text-right">{r.total_12pk}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         <DistributorMap distributors={distributors} />
-      </div>
+
+    </div>
 
       <DrilldownModal
         isOpen={!!selectedKPI}
