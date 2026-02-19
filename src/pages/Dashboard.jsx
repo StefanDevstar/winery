@@ -13,6 +13,7 @@ import DrilldownModal from "../components/dashboard/DrilldownModal";
 import { getWarehouseAvailable12pk } from "@/lib/utils";
 import { summarizeWarehouseMagnumAndCS } from "@/lib/utils";
 import { loadAllMonthlyData, getMonthsIndex } from "@/lib/utils";
+import { idbGet, idbSet } from "@/lib/storage";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 
@@ -163,31 +164,8 @@ function inferDSOHMarketRaw(row, fallbackSheetName = "") {
 }
 
 function loadDistributorStockOnHand() {
-  const metaRaw = localStorage.getItem("vc_distributor_stock_on_hand_metadata");
-  const legacyRaw = localStorage.getItem("vc_distributor_stock_on_hand_data");
-
+  // Legacy loader — data now comes from IndexedDB via rawData.stockOnHandDistributors
   let rows = [];
-
-  // Prefer per-sheet if metadata exists
-  if (metaRaw) {
-    const meta = JSON.parse(metaRaw);
-    const sheetNames = Array.isArray(meta?.sheetNames) ? meta.sheetNames : [];
-
-    for (const sn of sheetNames) {
-      const k = `vc_distributor_stock_on_hand_data_${sn}`;
-      const sheetRows = safeParseArray(localStorage.getItem(k) || "[]");
-
-      // keep sheet name attached even if normalizer didn't
-      for (const r of sheetRows) {
-        rows.push({ ...r, _sheetName: r?._sheetName ?? sn });
-      }
-    }
-  }
-
-  // fallback to legacy aggregated if no sheet rows
-  if (rows.length === 0 && legacyRaw) {
-    rows = safeParseArray(legacyRaw);
-  }
 
   // normalize market fields so filtering is consistent
   rows = rows.map((r) => {
@@ -197,7 +175,6 @@ function loadDistributorStockOnHand() {
     return {
       ...r,
       _sheetName: r?._sheetName ?? rawMarket,
-      // only fill if missing/blank
       AdditionalAttribute2:
         (r?.AdditionalAttribute2 && String(r.AdditionalAttribute2).trim())
           ? r.AdditionalAttribute2
@@ -541,79 +518,42 @@ function getMinMaxDates(rows) {
   return { min, max };
 }
 
-  // Memoize raw data loading - try monthly storage first, then fall back to legacy
-  const rawData = useMemo(() => {
-    try {
-      // Try monthly storage first
-      const monthlyData = loadAllMonthlyData();
-      if (monthlyData) {
-        return {
-          exportsData: monthlyData.exports.length > 0 ? monthlyData.exports : null,
-          warehouseStock: monthlyData.warehouse_stock.length > 0 ? monthlyData.warehouse_stock : null,
-          stockOnHandDistributors: monthlyData.stock_on_hand_distributors.length > 0 ? monthlyData.stock_on_hand_distributors : null,
-          salesMetadata: null,
-          _monthlySalesData: monthlyData.sales.length > 0 ? monthlyData.sales : null,
-          _isMonthly: true,
-        };
-      }
+  // Load raw data asynchronously from IndexedDB
+  const [rawData, setRawData] = useState(null);
+  const [rawDataVersion, setRawDataVersion] = useState(0);
 
-      // Legacy fallback
-      const salesMetadataRaw = localStorage.getItem("vc_salesmetadata");
-      const exportsRaw = localStorage.getItem("vc_exports_data");
-      const warehouseStockRaw = localStorage.getItem("vc_warehouse_stock_data");
-      const stockOnHandDistributorsRaw = localStorage.getItem("vc_distributor_stock_on_hand_data");
-
-      return {
-        exportsData: exportsRaw ? JSON.parse(exportsRaw) : null,
-        warehouseStock: warehouseStockRaw ? JSON.parse(warehouseStockRaw) : null,
-        stockOnHandDistributors: stockOnHandDistributorsRaw ? JSON.parse(stockOnHandDistributorsRaw) : null,
-        salesMetadata: salesMetadataRaw ? JSON.parse(salesMetadataRaw) : null,
-        _isMonthly: false,
-      };
-    } catch (err) {
-      return null;
-    }
-  }, []);
-
-  // Warehouse stock rows (aggregated from monthly or legacy localStorage)
-const warehouseStockRows = React.useMemo(() => {
-  let rows = [];
-
-  try {
-    // Try monthly data first
-    if (rawData?._isMonthly && rawData?.warehouseStock) {
-      rows = rawData.warehouseStock;
-    }
-    
-    // Legacy: combined key
-    if (rows.length === 0) {
-      const direct = localStorage.getItem("vc_warehouse_stock_data");
-      if (direct) {
-        const parsed = JSON.parse(direct);
-        if (Array.isArray(parsed)) rows = parsed;
-      }
-    }
-
-    // Legacy: per-sheet keys
-    if (rows.length === 0) {
-      const metaRaw = localStorage.getItem("vc_warehouse_stock_metadata");
-      if (metaRaw) {
-        const meta = JSON.parse(metaRaw);
-        const sheetNames = Array.isArray(meta?.sheetNames) ? meta.sheetNames : [];
-        for (const sn of sheetNames) {
-          const key = `vc_warehouse_stock_data_${sn}`;
-          const raw = localStorage.getItem(key);
-          if (!raw) continue;
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) rows.push(...parsed);
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const monthlyData = await loadAllMonthlyData();
+        if (cancelled) return;
+        if (monthlyData) {
+          setRawData({
+            exportsData: monthlyData.exports.length > 0 ? monthlyData.exports : null,
+            warehouseStock: monthlyData.warehouse_stock.length > 0 ? monthlyData.warehouse_stock : null,
+            stockOnHandDistributors: monthlyData.stock_on_hand_distributors.length > 0 ? monthlyData.stock_on_hand_distributors : null,
+            salesMetadata: null,
+            _monthlySalesData: monthlyData.sales.length > 0 ? monthlyData.sales : null,
+            _isMonthly: true,
+          });
+        } else {
+          setRawData(null);
         }
+      } catch (err) {
+        if (!cancelled) setRawData(null);
       }
     }
-  } catch (err) {
-    console.warn("[Dashboard] failed to read warehouse stock from localStorage:", err);
-  }
+    load();
+    return () => { cancelled = true; };
+  }, [rawDataVersion]);
 
-  return rows;
+  // Warehouse stock rows from monthly IndexedDB data
+const warehouseStockRows = React.useMemo(() => {
+  if (rawData?._isMonthly && rawData?.warehouseStock) {
+    return rawData.warehouseStock;
+  }
+  return [];
 }, [rawData]);
 
 const magnumCsTable = React.useMemo(() => {
@@ -649,16 +589,25 @@ const magnumCsTable = React.useMemo(() => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [warehouseStockProjection, setWarehouseStockProjection] = useState([]);
 
-  // Dismissed alerts (persisted in localStorage)
-  const [dismissedAlerts, setDismissedAlerts] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('vc_dismissed_alerts') || '[]');
-    } catch { return []; }
-  });
+  // Dismissed alerts (persisted in IndexedDB)
+  const [dismissedAlerts, setDismissedAlerts] = useState([]);
+
+  useEffect(() => {
+    idbGet('vc_dismissed_alerts').then(v => {
+      if (Array.isArray(v)) setDismissedAlerts(v);
+    });
+  }, []);
 
   // Magnum/CS table filters
   const [magnumTableBrand, setMagnumTableBrand] = useState("all");
   const [magnumTableVariety, setMagnumTableVariety] = useState("all");
+
+  // Re-fetch rawData from IndexedDB when new data is uploaded
+  useEffect(() => {
+    const handler = () => setRawDataVersion(v => v + 1);
+    window.addEventListener("vc:data:uploaded", handler);
+    return () => window.removeEventListener("vc:data:uploaded", handler);
+  }, []);
 
   useEffect(() => {
     console.log("[Dashboard] country changed ->", filters.country);
@@ -695,32 +644,6 @@ const magnumCsTable = React.useMemo(() => {
           let exportsData = [];
           if (rawExportsData && Array.isArray(rawExportsData)) {
             exportsData = rawExportsData;
-          } else {
-            // Try loading from individual sheets
-            const exportsMetadataRaw = localStorage.getItem("vc_exports_metadata");
-            if (exportsMetadataRaw) {
-              try {
-                const metadata = JSON.parse(exportsMetadataRaw);
-                if (metadata.sheetNames && Array.isArray(metadata.sheetNames)) {
-                  metadata.sheetNames.forEach(sheetName => {
-                    const sheetKey = `vc_exports_data_${sheetName}`;
-                    const sheetData = localStorage.getItem(sheetKey);
-                    if (sheetData) {
-                      try {
-                        const parsed = JSON.parse(sheetData);
-                        if (Array.isArray(parsed)) {
-                          exportsData.push(...parsed);
-                        }
-                      } catch (e) {
-                        // Error parsing exports sheet
-                      }
-                    }
-                  });
-                }
-              } catch (e) {
-                // Error parsing exports metadata
-              }
-            }
           }
 
           tgroup("🚚 [TRANSIT] RAW exportsData snapshot");
@@ -763,37 +686,6 @@ const magnumCsTable = React.useMemo(() => {
           
           if (rawData?._isMonthly && rawData?._monthlySalesData) {
             salesData = rawData._monthlySalesData;
-          } else {
-            const salesMetadataRaw = localStorage.getItem("vc_sales_metadata");
-            if (salesMetadataRaw) {
-              try {
-                const salesMeta = JSON.parse(salesMetadataRaw);
-                if (salesMeta.sheetNames && Array.isArray(salesMeta.sheetNames)) {
-                  const allowedSheets = ['IRE', 'NZL', 'USA', 'AU-B', 'AU-C'];
-                  
-                  salesMeta.sheetNames.forEach(sheetName => {
-                    const normalizedSheetName = sheetName.toUpperCase();
-                    const isAllowed = allowedSheets.some(allowed => 
-                      normalizedSheetName === allowed.toUpperCase() || 
-                      normalizedSheetName.includes(allowed.toUpperCase())
-                    );
-                    
-                    if (isAllowed) {
-                      const sheetKey = `vc_sales_data_${sheetName}`;
-                      const sheetData = localStorage.getItem(sheetKey);
-                      if (sheetData) {
-                        try {
-                          const parsed = JSON.parse(sheetData);
-                          if (Array.isArray(parsed)) {
-                            salesData.push(...parsed.map(r => ({ ...r, _sheetName: r?._sheetName ?? sheetName })));
-                          }
-                        } catch (e) {}
-                      }
-                    }
-                  });
-                }
-              } catch (e) {}
-            }
           }
 
           // Also load monthly distributor SOH if available
@@ -822,10 +714,7 @@ const magnumCsTable = React.useMemo(() => {
           // ✅ DEBUG: SALES load + AU-C presence
           console.groupCollapsed("[SALES] load debug");
           console.log("[SALES] total rows:", salesData.length);
-          try {
-            const _debugSalesMeta = localStorage.getItem("vc_sales_metadata");
-            console.log("[SALES] meta sheetNames:", _debugSalesMeta ? JSON.parse(_debugSalesMeta)?.sheetNames : "(monthly or none)");
-          } catch {};
+          console.log("[SALES] source:", rawData?._isMonthly ? "monthly (IndexedDB)" : "none");
 
           const bySheet = salesData.reduce((acc, r) => {
             const sn = String(r?._sheetName || "").trim() || "(none)";
@@ -3199,8 +3088,8 @@ const magnumCsTable = React.useMemo(() => {
           )
         };
         
-        // Store shipping stats for potential future use (e.g., chatbot queries)
-        localStorage.setItem('vc_shipping_stats', JSON.stringify(shippingStats));
+        // Store shipping stats for potential future use
+        idbSet('vc_shipping_stats', shippingStats).catch(() => {});
 
         // ───────── Distributor Summary ─────────
         const distributorSummary = Object.values(
@@ -3296,36 +3185,10 @@ const magnumCsTable = React.useMemo(() => {
         
         
         
-        // Load warehouse stock data - aggregate from all sheets if needed
+        // Load warehouse stock data from rawData (already loaded from IndexedDB)
         let warehouseStockData = [];
         if (warehouseStock && Array.isArray(warehouseStock)) {
           warehouseStockData = warehouseStock;
-        } else {
-          // Try loading from individual sheets
-          const warehouseMetadataRaw = localStorage.getItem("vc_warehouse_stock_metadata");
-          if (warehouseMetadataRaw) {
-            try {
-              const metadata = JSON.parse(warehouseMetadataRaw);
-              if (metadata.sheetNames && Array.isArray(metadata.sheetNames)) {
-                metadata.sheetNames.forEach(sheetName => {
-                  const sheetKey = `vc_warehouse_stock_data_${sheetName}`;
-                  const sheetData = localStorage.getItem(sheetKey);
-                  if (sheetData) {
-                    try {
-                      const parsed = JSON.parse(sheetData);
-                      if (Array.isArray(parsed)) {
-                        warehouseStockData.push(...parsed);
-                      }
-                    } catch (e) {
-                      // Error parsing warehouse stock sheet
-                    }
-                  }
-                });
-              }
-            } catch (e) {
-              // Error parsing warehouse stock metadata
-            }
-          }
         }
 
         function detectDGFGKey(rows, maxRows = 500) {
@@ -3893,9 +3756,6 @@ if (DEBUG_WH_AUB && normalizeCountryCode(countryFilter).toLowerCase() === "au-b"
     };
 
     loadAndProcessData();
-    const handler = () => loadAndProcessData();
-    window.addEventListener("vc:data:uploaded", handler);
-    return () => window.removeEventListener("vc:data:uploaded", handler);
   }, [filters, rawData]);
 
   // Debounce filter changes to prevent excessive recalculations
@@ -4012,7 +3872,7 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
   const handleDismissAlert = useCallback((alertId) => {
     setDismissedAlerts(prev => {
       const next = [...prev, alertId];
-      localStorage.setItem('vc_dismissed_alerts', JSON.stringify(next));
+      idbSet('vc_dismissed_alerts', next).catch(() => {});
       return next;
     });
   }, []);
@@ -4181,8 +4041,7 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
                   <tr className="border-b">
                     <th className="text-left py-2 pr-3">Wine</th>
                     <th className="text-right py-2 px-3">C/S (12pk)</th>
-                    <th className="text-right py-2 px-3">Magnum (12pk)</th>
-                    <th className="text-right py-2 pl-3">Total</th>
+                    <th className="text-right py-2 pl-3">Magnum (12pk)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -4190,17 +4049,14 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
                     <tr key={r.wine} className="border-b">
                       <td className="py-2 pr-3 font-medium">{r.wine}</td>
                       <td className="py-2 px-3 text-right">{r.cs_12pk}</td>
-                      <td className="py-2 px-3 text-right">{r.magnum_12pk}</td>
-                      <td className="py-2 pl-3 text-right">{r.total_12pk}</td>
+                      <td className="py-2 pl-3 text-right">{r.magnum_12pk}</td>
                     </tr>
                   ))}
-                  {/* Totals row */}
                   {magnumCsTotals && (
                     <tr className="border-t-2 border-slate-300 font-bold bg-slate-50">
                       <td className="py-2 pr-3">Total</td>
                       <td className="py-2 px-3 text-right">{magnumCsTotals.cs_12pk}</td>
-                      <td className="py-2 px-3 text-right">{magnumCsTotals.magnum_12pk}</td>
-                      <td className="py-2 pl-3 text-right">{magnumCsTotals.total_12pk}</td>
+                      <td className="py-2 pl-3 text-right">{magnumCsTotals.magnum_12pk}</td>
                     </tr>
                   )}
                 </tbody>

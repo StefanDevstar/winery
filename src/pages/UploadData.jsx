@@ -39,10 +39,12 @@ import {
   isMonthLocked,
   clearMonthTypeData,
   clearMonthAllData,
+  clearAllIdbData,
   MONTHLY_DATA_TYPES,
   getMonthLabel,
   getCurrentMonthKey,
 } from '@/lib/utils';
+import { idbSet } from '@/lib/storage';
 
 const DATA_TYPE_COLORS = {
   exports: '#3b82f6',
@@ -60,7 +62,8 @@ const DATA_TYPE_LABELS = {
 
 export default function UploadDataPage() {
   const [workingMonth, setWorkingMonth] = useState(() => getCurrentMonthKey());
-  const [monthsIndex, setMonthsIndex] = useState(() => getMonthsIndex());
+  const [monthsIndex, setMonthsIndex] = useState({});
+  const [indexLoaded, setIndexLoaded] = useState(false);
 
   const [statuses, setStatuses] = useState({
     sales: { status: 'idle', message: '', progress: 0 },
@@ -70,6 +73,14 @@ export default function UploadDataPage() {
   });
   const [globalError, setGlobalError] = useState(null);
   const [globalSuccess, setGlobalSuccess] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getMonthsIndex().then(idx => {
+      if (!cancelled) { setMonthsIndex(idx); setIndexLoaded(true); }
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const monthLocked = isMonthLocked(monthsIndex, workingMonth);
   const monthComplete = isMonthComplete(monthsIndex, workingMonth);
@@ -105,7 +116,7 @@ export default function UploadDataPage() {
     setGlobalError(null);
   };
 
-  const updateMonthIndex = useCallback((type, recordCount) => {
+  const updateMonthIndex = useCallback(async (type, recordCount) => {
     setMonthsIndex(prev => {
       const next = { ...prev };
       if (!next[workingMonth]) next[workingMonth] = {};
@@ -115,7 +126,6 @@ export default function UploadDataPage() {
         recordCount,
       };
 
-      // Auto-lock if all 4 types are uploaded
       if (MONTHLY_DATA_TYPES.every(t => next[workingMonth][t]?.uploaded)) {
         next[workingMonth].locked = true;
       }
@@ -182,34 +192,21 @@ export default function UploadDataPage() {
 
         const normalizeFn = normalizeMap[type];
         
-        Object.keys(sheetsData).forEach((sheetName) => {
+        for (const sheetName of Object.keys(sheetsData)) {
           const sheetRecords = sheetsData[sheetName];
-          if (sheetRecords.length === 0) return;
+          if (sheetRecords.length === 0) continue;
           
           const normalizedRecords = normalizeFn(sheetRecords, sheetName);
           
-          // Store per-sheet data with monthly key
-          const sheetStorageKey = getMonthSheetKey(workingMonth, type, sheetName);
-          localStorage.setItem(sheetStorageKey, JSON.stringify(normalizedRecords));
+          await idbSet(getMonthSheetKey(workingMonth, type, sheetName), normalizedRecords);
           
           sheetMetadata.sheetNames.push(sheetName);
           sheetMetadata.sheetCounts[sheetName] = normalizedRecords.length;
           allNormalizedRecords.push(...normalizedRecords);
-        });
-
-        // Store metadata
-        localStorage.setItem(getMonthMetaKey(workingMonth, type), JSON.stringify(sheetMetadata));
-        
-        // Store combined data
-        try {
-          localStorage.setItem(getMonthDataKey(workingMonth, type), JSON.stringify(allNormalizedRecords));
-        } catch (e) {
-          if (e.name === 'QuotaExceededError' || e.code === 22) {
-            localStorage.removeItem(getMonthDataKey(workingMonth, type));
-          } else {
-            throw e;
-          }
         }
+
+        await idbSet(getMonthMetaKey(workingMonth, type), sheetMetadata);
+        await idbSet(getMonthDataKey(workingMonth, type), allNormalizedRecords);
 
         records = allNormalizedRecords;
         totalRecords = allNormalizedRecords.length;
@@ -240,7 +237,7 @@ export default function UploadDataPage() {
 
       // For CSV files, save to monthly key
       if (!isExcel) {
-        localStorage.setItem(getMonthDataKey(workingMonth, type), JSON.stringify(records));
+        await idbSet(getMonthDataKey(workingMonth, type), records);
       }
 
       // Update month index
@@ -261,8 +258,7 @@ export default function UploadDataPage() {
       setTimeout(() => updateStatus(type, 'idle', ''), 3000);
 
     } catch (error) {
-      clearMonthTypeData(workingMonth, type);
-      // Remove from index
+      await clearMonthTypeData(workingMonth, type);
       setMonthsIndex(prev => {
         const next = { ...prev };
         if (next[workingMonth]?.[type]) {
@@ -277,8 +273,8 @@ export default function UploadDataPage() {
     }
   };
 
-  const handleResetMonth = () => {
-    clearMonthAllData(workingMonth);
+  const handleResetMonth = async () => {
+    await clearMonthAllData(workingMonth);
     setMonthsIndex(prev => {
       const next = { ...prev };
       delete next[workingMonth];
@@ -295,13 +291,10 @@ export default function UploadDataPage() {
     setGlobalSuccess(`Data for ${getMonthLabel(workingMonth)} has been cleared and unlocked.`);
   };
 
-  const handleRefreshAll = () => {
-    // Clear all monthly data
-    Object.keys(monthsIndex).forEach(mk => clearMonthAllData(mk));
-    // Also clear legacy keys
-    localStorage.clear();
+  const handleRefreshAll = async () => {
+    await clearAllIdbData();
     setMonthsIndex({});
-    saveMonthsIndex({});
+    await saveMonthsIndex({});
     setStatuses({
       sales: { status: 'idle', message: '', progress: 0 },
       exports: { status: 'idle', message: '', progress: 0 },

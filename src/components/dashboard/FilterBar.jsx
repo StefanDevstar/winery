@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect } from "react";
+import React, { useMemo, useEffect, useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -204,91 +204,43 @@ export default function FilterBar({ filters, onFilterChange }) {
   
 
   // Extract available countries, distributors/states and wine types from data
+  // Async data for filter options (loaded from IndexedDB)
+  const [filterSourceData, setFilterSourceData] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const monthlyData = await loadAllMonthlyData();
+      if (cancelled) return;
+      setFilterSourceData(monthlyData);
+    }
+    load();
+
+    const handler = () => { load(); };
+    window.addEventListener("vc:data:uploaded", handler);
+    return () => { cancelled = true; window.removeEventListener("vc:data:uploaded", handler); };
+  }, []);
+
   const filterOptions = useMemo(() => {
     const DEBUG = true;
     const dbg = (...args) => DEBUG && console.log("[FilterBar]", ...args);
   
     try {
-      const safeJson = (s) => {
-        try {
-          const v = JSON.parse(s);
-          return v;
-        } catch {
-          return null;
-        }
-      };
-  
-      // ---------- Load distributor stock + sales ----------
-      // Try monthly storage first, fall back to legacy
       let distributorStock = [];
       let salesData = [];
       let metadata = null;
 
-      const monthlyData = loadAllMonthlyData();
-      if (monthlyData) {
-        distributorStock = monthlyData.stock_on_hand_distributors || [];
-        salesData = monthlyData.sales || [];
-        // Build metadata from months index for country detection
-        const mIndex = getMonthsIndex();
-        const allSheetNames = new Set();
-        Object.values(mIndex).forEach(monthInfo => {
-          ['sales', 'stock_on_hand_distributors'].forEach(type => {
-            if (monthInfo[type]?.uploaded) {
-              try {
-                const metaKey = `vc_month_${Object.keys(mIndex).find(k => mIndex[k] === monthInfo)}_${type}_meta`;
-                // Infer sheet names from data _sheetName fields
-              } catch {}
-            }
-          });
-        });
-        // Infer sheet names from data for country detection
+      if (filterSourceData) {
+        distributorStock = filterSourceData.stock_on_hand_distributors || [];
+        salesData = filterSourceData.sales || [];
         const sheetNames = new Set();
         [...distributorStock, ...salesData].forEach(r => {
           const sn = r._sheetName || r.AdditionalAttribute2 || r.Market || '';
           if (sn) sheetNames.add(String(sn).trim());
         });
         metadata = { sheetNames: Array.from(sheetNames) };
-      } else {
-        // Legacy: load from old keys
-        const distributorRaw = localStorage.getItem("vc_distributor_stock_on_hand_data");
-        const distributorMetadataRaw = localStorage.getItem("vc_distributor_stock_on_hand_metadata");
-        metadata = distributorMetadataRaw ? safeJson(distributorMetadataRaw) : null;
-    
-        distributorStock = distributorRaw ? safeJson(distributorRaw) : [];
-        if (!Array.isArray(distributorStock)) distributorStock = [];
-    
-        const salesMetadataRaw = localStorage.getItem("vc_sales_metadata");
-
-        const sheetMatchesSelectedCountry = (sheetName, selectedCountry) => {
-          const sn = String(sheetName || "").toUpperCase();
-          if (!selectedCountry || selectedCountry === "all") return true;
-          if (selectedCountry === "usa") return sn.includes("USA");
-          if (selectedCountry === "au-b") return sn.includes("AU-B") || sn.includes("AUB");
-          if (selectedCountry === "au-c") return sn.includes("AU-C") || sn.includes("AUC");
-          if (selectedCountry === "nzl") return sn === "NZ" || sn === "NZL" || sn.includes("NZ");
-          if (selectedCountry === "ire") return sn.includes("IRE");
-          return false;
-        };
-
-        if (salesMetadataRaw) {
-          const salesMeta = safeJson(salesMetadataRaw);
-          const selectedCountry = String(filters.country || "all").toLowerCase();
-
-          if (salesMeta?.sheetNames && Array.isArray(salesMeta.sheetNames)) {
-            salesMeta.sheetNames.forEach((sheetName) => {
-              if (!sheetMatchesSelectedCountry(sheetName, selectedCountry)) return;
-              const key = `vc_sales_data_${sheetName}`;
-              const sheetData = localStorage.getItem(key);
-              const parsed = sheetData ? safeJson(sheetData) : null;
-              if (Array.isArray(parsed)) salesData.push(...parsed);
-            });
-          }
-        }
       }
-     
-  
-  
-      // If nothing at all, return empty options
+
       if (distributorStock.length === 0 && salesData.length === 0) {
         return { countries: [], distributors: [], states: [], wineTypes: [], brands: [], channels: [] };
       }
@@ -573,7 +525,7 @@ export default function FilterBar({ filters, onFilterChange }) {
       return { countries: [], distributors: [], states: [], wineTypes: [], brands: [], channels: [] };
 
     }
-  }, [filters.country, filters.brand]);
+  }, [filters.country, filters.brand, filterSourceData]);
   
 
   const handleDateRangeChange = (range) => {
@@ -760,39 +712,12 @@ export default function FilterBar({ filters, onFilterChange }) {
               <CalendarIcon className="w-4 h-4" />
               <span className="text-xs sm:text-sm font-medium">Historical Period:</span>
               </div>
-              {/* Last Update Date */}
-              {(() => {
-                try {
-                  const distributorMetadataRaw = localStorage.getItem("vc_distributor_stock_on_hand_metadata");
-                  const distributorRaw = localStorage.getItem("vc_distributor_stock_on_hand_data");
-                  let lastUpdate = null;
-                  
-                  if (distributorMetadataRaw) {
-                    const metadata = JSON.parse(distributorMetadataRaw);
-                    if (metadata.lastUpdate) {
-                      lastUpdate = new Date(metadata.lastUpdate);
-                    }
-                  }
-                  
-                  // Fallback: use data timestamp if available
-                  if (!lastUpdate && distributorRaw) {
-                    const data = JSON.parse(distributorRaw);
-                    if (data && data.length > 0 && data[0]._timestamp) {
-                      lastUpdate = new Date(data[0]._timestamp);
-                    }
-                  }
-                  
-                  return lastUpdate ? (
-                    <div className="flex items-center gap-1 text-xs text-slate-500">
-                      <span>Last updated: {format(lastUpdate, "MMM d, yyyy")}</span>
-                      <span className="text-yellow-600 font-medium">⚠</span>
-                      <span className="text-xs">Not all data aligned with dates</span>
-                    </div>
-                  ) : null;
-                } catch (err) {
-                  return null;
-                }
-              })()}
+              {/* Last Update Date — derived from loaded filter data */}
+              {filterSourceData ? (
+                <div className="flex items-center gap-1 text-xs text-slate-500">
+                  <span>Data loaded from monthly snapshots</span>
+                </div>
+              ) : null}
             </div>
             
             <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">

@@ -2487,19 +2487,21 @@ export function normalizeDistributorStockOnHandData(records, sheetName = "") {
   return filterEmptyRecords(normalized);
 }
 
-// ==================== Monthly Snapshot Storage ====================
+// ==================== Monthly Snapshot Storage (IndexedDB) ====================
+
+import { idbGet, idbSet, idbDelete, idbClear } from './storage';
 
 export const MONTHS_INDEX_KEY = 'vc_months_index';
 export const MONTHLY_DATA_TYPES = ['exports', 'warehouse_stock', 'sales', 'stock_on_hand_distributors'];
 
-export function getMonthsIndex() {
+export async function getMonthsIndex() {
   try {
-    return JSON.parse(localStorage.getItem(MONTHS_INDEX_KEY) || '{}');
+    return (await idbGet(MONTHS_INDEX_KEY)) || {};
   } catch { return {}; }
 }
 
-export function saveMonthsIndex(index) {
-  localStorage.setItem(MONTHS_INDEX_KEY, JSON.stringify(index));
+export async function saveMonthsIndex(index) {
+  await idbSet(MONTHS_INDEX_KEY, index);
 }
 
 export function getMonthDataKey(monthKey, type) {
@@ -2524,28 +2526,29 @@ export function isMonthLocked(idx, monthKey) {
   return idx[monthKey]?.locked === true;
 }
 
-export function clearMonthTypeData(monthKey, type) {
-  const metaRaw = localStorage.getItem(getMonthMetaKey(monthKey, type));
-  if (metaRaw) {
-    try {
-      const meta = JSON.parse(metaRaw);
-      if (meta.sheetNames && Array.isArray(meta.sheetNames)) {
-        meta.sheetNames.forEach(sn => {
-          localStorage.removeItem(getMonthSheetKey(monthKey, type, sn));
-        });
-      }
-    } catch {}
-    localStorage.removeItem(getMonthMetaKey(monthKey, type));
+export async function clearMonthTypeData(monthKey, type) {
+  const meta = await idbGet(getMonthMetaKey(monthKey, type));
+  if (meta && meta.sheetNames && Array.isArray(meta.sheetNames)) {
+    for (const sn of meta.sheetNames) {
+      await idbDelete(getMonthSheetKey(monthKey, type, sn));
+    }
   }
-  localStorage.removeItem(getMonthDataKey(monthKey, type));
+  await idbDelete(getMonthMetaKey(monthKey, type));
+  await idbDelete(getMonthDataKey(monthKey, type));
 }
 
-export function clearMonthAllData(monthKey) {
-  MONTHLY_DATA_TYPES.forEach(type => clearMonthTypeData(monthKey, type));
+export async function clearMonthAllData(monthKey) {
+  for (const type of MONTHLY_DATA_TYPES) {
+    await clearMonthTypeData(monthKey, type);
+  }
 }
 
-export function loadAllMonthlyData() {
-  const index = getMonthsIndex();
+export async function clearAllIdbData() {
+  await idbClear();
+}
+
+export async function loadAllMonthlyData() {
+  const index = await getMonthsIndex();
   if (!index || Object.keys(index).length === 0) return null;
 
   const result = {
@@ -2560,34 +2563,21 @@ export function loadAllMonthlyData() {
       if (!monthInfo[type]?.uploaded) continue;
 
       let loaded = false;
-      const metaRaw = localStorage.getItem(getMonthMetaKey(monthKey, type));
-      if (metaRaw) {
-        try {
-          const meta = JSON.parse(metaRaw);
-          if (meta.sheetNames && Array.isArray(meta.sheetNames)) {
-            meta.sheetNames.forEach(sn => {
-              const sheetRaw = localStorage.getItem(getMonthSheetKey(monthKey, type, sn));
-              if (sheetRaw) {
-                const parsed = JSON.parse(sheetRaw);
-                if (Array.isArray(parsed)) {
-                  result[type].push(...parsed.map(r => ({ ...r, _uploadMonth: monthKey, _sheetName: r._sheetName || sn })));
-                }
-              }
-            });
-            loaded = true;
+      const meta = await idbGet(getMonthMetaKey(monthKey, type));
+      if (meta && meta.sheetNames && Array.isArray(meta.sheetNames)) {
+        for (const sn of meta.sheetNames) {
+          const sheetData = await idbGet(getMonthSheetKey(monthKey, type, sn));
+          if (Array.isArray(sheetData)) {
+            result[type].push(...sheetData.map(r => ({ ...r, _uploadMonth: monthKey, _sheetName: r._sheetName || sn })));
           }
-        } catch {}
+        }
+        loaded = true;
       }
 
       if (!loaded) {
-        const raw = localStorage.getItem(getMonthDataKey(monthKey, type));
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) {
-              result[type].push(...parsed.map(r => ({ ...r, _uploadMonth: monthKey })));
-            }
-          } catch {}
+        const data = await idbGet(getMonthDataKey(monthKey, type));
+        if (Array.isArray(data)) {
+          result[type].push(...data.map(r => ({ ...r, _uploadMonth: monthKey })));
         }
       }
     }
