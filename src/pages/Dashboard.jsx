@@ -4065,7 +4065,7 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
           </div>
         )}
 
-        <DistributorMap distributors={distributors} />
+        {/* <DistributorMap distributors={distributors} /> */}
 
     </div>
 

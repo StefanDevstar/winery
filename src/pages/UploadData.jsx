@@ -85,13 +85,12 @@ export default function UploadDataPage() {
   const monthLocked = isMonthLocked(monthsIndex, workingMonth);
   const monthComplete = isMonthComplete(monthsIndex, workingMonth);
 
-  // Generate month tabs (current month + 7 forward months)
+  // Generate month tabs (January to December of the current year)
   const monthTabs = useMemo(() => {
     const tabs = [];
-    const now = new Date();
-    for (let i = 0; i < 8; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const year = new Date().getFullYear();
+    for (let m = 0; m < 12; m++) {
+      const key = `${year}-${String(m + 1).padStart(2, '0')}`;
       tabs.push({ key, label: getMonthLabel(key) });
     }
     return tabs;
