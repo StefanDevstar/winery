@@ -2004,13 +2004,22 @@ const magnumCsTable = React.useMemo(() => {
           }
        // ───────── Build Time Range ─────────
         const from = filters?.dateRange?.from;
-        const to = filters?.dateRange?.to;
+        let to = filters?.dateRange?.to;
+
+        // Set the projection end to the latest uploaded SOH month
+        if (rawData?._isMonthly && rawData?.stockOnHandDistributors?.length > 0) {
+          const sohMonths = [...new Set(rawData.stockOnHandDistributors.map(r => r._uploadMonth).filter(Boolean))].sort();
+          if (sohMonths.length > 0) {
+            const [capY, capM] = sohMonths[sohMonths.length - 1].split('-').map(Number);
+            to = new Date(capY, capM, 0);
+          }
+        }
 
         const base = (filters.viewMode === "forward" && to)
-          ? new Date(to)                 // start forward from end of selected range
-          : new Date();                  // fallback
+          ? new Date(to)
+          : new Date();
 
-        base.setDate(1); // normalize
+        base.setDate(1);
 
         const monthsToDisplay =
           filters.viewMode === "forward"
