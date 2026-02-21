@@ -1748,6 +1748,13 @@ const magnumCsTable = React.useMemo(() => {
           filteredExports.push(r);
         }
 
+        function getFilteredDistributorStockOnHandForMonth(monthKey) {
+          // filteredDistributorStockOnHand already has country/state/distributor/brand/wine filters applied.
+          if (!rawData?._isMonthly) return filteredDistributorStockOnHand || [];
+        
+          const mk = String(monthKey || "").trim();
+          return (filteredDistributorStockOnHand || []).filter(r => String(r?._uploadMonth || "").trim() === mk);
+        }
 
           // ───────── Stock & Exports Aggregation by Distributor and Wine ─────────
           // Use distributor stock on hand data (filteredDistributorStockOnHand) for actual stock
@@ -2030,6 +2037,7 @@ const magnumCsTable = React.useMemo(() => {
                   list.push({
                     month: monthNames[cur.getMonth()],
                     year: cur.getFullYear().toString(),
+                    monthKey: `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`, // ✅ YYYY-MM
                   });
                   cur.setMonth(cur.getMonth() + 1);
                 }
@@ -2046,6 +2054,7 @@ const magnumCsTable = React.useMemo(() => {
                   list.push({
                     month: monthNames[cur.getMonth()],
                     year: cur.getFullYear().toString(),
+                    monthKey: `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`, // ✅ YYYY-MM
                   });
                   cur.setMonth(cur.getMonth() + 1);
                 }
@@ -2693,7 +2702,7 @@ const magnumCsTable = React.useMemo(() => {
         const cumulativeStockFloatByItem = new Map(); // key: `${distributor}_${wineCode}`, value: stockFloat
         let previousAggregateStockFloat = undefined; // Track previous month's aggregate stock float
         
-        const projection = monthsToDisplay.map(({ month, year }, idx) => {
+        const projection = monthsToDisplay.map(({ month, year, monthKey }, idx) => {
           const isForward = filters.viewMode === "forward";
           const isForwardBaseline = isForward && idx === 0; // first forward month on the chart
           // Determine if this period is historical (past) or future
@@ -2749,6 +2758,17 @@ const magnumCsTable = React.useMemo(() => {
               });
             }
           }
+          const distributorSOHForThisMonth = getFilteredDistributorStockOnHandForMonth(monthKey);
+          // Forward mode: if future months have no upload, carry forward the baseline month’s SOH snapshot
+          const baselineMonthKey = monthsToDisplay?.[0]?.monthKey;
+          const baselineSOH = baselineMonthKey
+            ? getFilteredDistributorStockOnHandForMonth(baselineMonthKey)
+            : [];
+
+          const sohRowsThisMonth =
+            filters.viewMode === "forward" && (distributorSOHForThisMonth?.length || 0) === 0
+              ? baselineSOH
+              : distributorSOHForThisMonth;
 
           // Limit to first 1000 items to prevent performance issues with very large datasets
           const limitedStockFloat = monthStockFloatArray;
@@ -2797,7 +2817,10 @@ const magnumCsTable = React.useMemo(() => {
           });
 
           // Aggregate for overall projection
-          const totalStock = monthStockFloatArray.reduce((sum, item) => sum + item.stock, 0);
+          const totalStock = (sohRowsThisMonth || []).reduce((sum, r) => {
+            const v = parseFloat(r?.OnHand ?? r?.StockOnHand ?? 0);
+            return sum + (Number.isFinite(v) ? v : 0);
+          }, 0);
           const totalInTransit = monthStockFloatArray.reduce((sum, item) => sum + item.inTransit, 0);
           
           // For aggregate: Use predictedSales (constant) for future months
