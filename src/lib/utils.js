@@ -768,7 +768,7 @@ export function normalizeCountryCode(countryCode) {
     'TH': 'th', // Thailand
     'DE': 'den', // Denmark (already mapped but adding for clarity)
   };
-  
+    
   // Direct match (exact match first - highest priority)
   if (countryMap[normalized]) {
     return countryMap[normalized];
@@ -806,6 +806,19 @@ export function normalizeCountryCode(countryCode) {
   // If no match found, return lowercase version for consistency
   return normalized.toLowerCase();
 }
+
+  // Put this right under normalizeCountryCode in the same utils file
+  export const DASHBOARD_MARKETS = new Set([
+    // ✅ ONLY include the markets that exist as individual options in your dashboard UI
+    "usa",
+    "ire",
+    "nzl",
+    "au-b",
+
+    // add these ONLY if they are real dashboard options / tabs:
+    // "au",
+    // "au-c",
+  ]);
 
 /**
  * Parses Product Description (SKU) column into components.

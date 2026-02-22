@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { normalizeCountryCode, normalizeWineTypeToCode } from "../lib/utils";
+import { normalizeCountryCode, normalizeWineTypeToCode, DASHBOARD_MARKETS } from "../lib/utils";
 
 import KPITile from "../components/dashboard/KPITile";
 import FilterBar from "../components/dashboard/FilterBar";
@@ -1827,14 +1827,28 @@ const magnumCsTable = React.useMemo(() => {
           // Group in-transit exports by market, distributor and wine code
           // Key format: `${normalizedMarket}_${customerKey}_${wineCode}` to ensure proper market assignment
           const inTransitByMarketDistributorWine = new Map();
+          const normalizedCountryFilter = countryFilter
+          ? normalizeCountryCode(countryFilter).toLowerCase()
+          : "";
+
+          const isAllMarkets = !normalizedCountryFilter; // (your "All Markets" currently seems to be falsy)
+              
+
           for (let i = 0; i < filteredExports.length; i++) {
             const e = filteredExports[i];
+
             
             // Get and normalize market from export record
             // First try Market/AdditionalAttribute2, then fallback to company mapping
             // Country is now set in AdditionalAttribute2 during normalization
             let rawMarket = (e.AdditionalAttribute2 || e.Market || "").trim();
             let normalizedMarket = normalizeCountryCode(rawMarket).toLowerCase();
+
+            if (isAllMarkets) {
+              if (!DASHBOARD_MARKETS.has(normalizedMarket)) continue;
+            } else {
+              if (normalizedMarket !== normalizedCountryFilter) continue;
+            }
             
             // Get customer/distributor name
             // IMPORTANT: Map country to distributor name (e.g., USA country = USA distributor)
@@ -2364,8 +2378,8 @@ const magnumCsTable = React.useMemo(() => {
         const currentDate = new Date();
         const transitCurrentYear = currentDate.getFullYear();
         const transitCurrentMonth = currentDate.getMonth();
-        // After building transitByMonth map
-        
+
+
         // Process each export to determine which month it should be allocated to
         for (let i = 0; i < filteredExports.length; i++) {
           const e = filteredExports[i];
@@ -2376,6 +2390,14 @@ const magnumCsTable = React.useMemo(() => {
             String(e.AdditionalAttribute2 || e.Market || "").trim()
           ).toLowerCase();
 
+
+          // ✅ If All Markets: ONLY include markets your dashboard supports
+          if (isAllMarkets) {
+            if (!DASHBOARD_MARKETS.has(rowCountry)) continue;
+          } else {
+            // ✅ If a market is selected: match it
+            if (rowCountry !== normalizedCountryFilter) continue;
+          }
           function leadTimeMonthsForCountry(c) {
             if (c === "au" || c === "au-b" || c === "au-c") return 1;
             if (c === "usa") return 2;
