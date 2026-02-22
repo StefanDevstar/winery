@@ -50,6 +50,25 @@ export default function StockFloatChart({
                 Stock Float: {(d.stockFloat ?? 0).toLocaleString()} cases
               </p>
             </div>
+            {coverageDays !== null && coverageDays !== undefined && (
+              <div className="border-t pt-1 mt-1">
+                <p>
+                  <span className="font-medium">Coverage:</span>{" "}
+                  <span className={
+                    coverageDays < 90 ? "text-red-600 font-semibold" :
+                    coverageDays < 180 ? "text-amber-600 font-semibold" : "text-green-600 font-semibold"
+                  }>
+                    {coverageDays} days
+                  </span>
+                </p>
+              </div>
+            )}
+            {predictedStockoutDate && (
+              <p className="mt-1">
+                <span className="font-medium">Predicted Stockout:</span>{" "}
+                <span className="text-red-600 font-semibold">{predictedStockoutDate}</span>
+              </p>
+            )}
           </div>
 
           {isBelow && (
@@ -210,7 +229,7 @@ export default function StockFloatChart({
           </p>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4 text-xs border-t pt-3 sm:pt-4">
+        <div className="mt-4 grid grid-cols-3 gap-3 sm:gap-4 text-xs border-t pt-3 sm:pt-4">
           <div>
             <p className="text-slate-500 text-xs">Avg Stock Float</p>
             <p className="font-semibold text-base sm:text-lg">{safeAvg} cases</p>
@@ -223,21 +242,6 @@ export default function StockFloatChart({
             <p className="text-slate-500 text-xs">Threshold</p>
             <p className="font-semibold text-base sm:text-lg text-red-600">
               {threshold} cases
-            </p>
-          </div>
-          <div>
-            <p className="text-slate-500 text-xs">Coverage</p>
-            <p className={`font-semibold text-base sm:text-lg ${
-              coverageDays !== null && coverageDays !== undefined && coverageDays < 90 ? 'text-red-600' : 
-              coverageDays !== null && coverageDays !== undefined && coverageDays < 180 ? 'text-amber-600' : 'text-green-600'
-            }`}>
-              {coverageDays !== null && coverageDays !== undefined ? `${coverageDays} days` : 'N/A'}
-            </p>
-          </div>
-          <div>
-            <p className="text-slate-500 text-xs">Predicted Stockout</p>
-            <p className={`font-semibold text-sm sm:text-base ${predictedStockoutDate ? 'text-red-600' : 'text-green-600'}`}>
-              {predictedStockoutDate || 'None in range'}
             </p>
           </div>
         </div>
