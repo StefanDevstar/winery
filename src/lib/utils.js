@@ -1706,7 +1706,7 @@ export function normalizeExportsData(records, sheetName = '', monthNames = [
     const departingNZCol = findColumn(["Departing NZ", "Departing", "Departure", "ETD"]);
     const shippedFromWWMCol = findColumn(["Shipped from WWM", "Date Shipped", "Shipped Date", "Shipped from", "Shipped"]);
 
-    const dateShippedCol = departingNZCol || shippedFromWWMCol;
+    const dateShippedCol = departingNZCol;
 
     const freightForwarderCol = findColumn(['Freight Forwarder','Freight','Forwarder','Carrier','Shipping Company']);
 
@@ -1772,7 +1772,7 @@ export function normalizeExportsData(records, sheetName = '', monthNames = [
       const brandDisplay = BRAND_NAME_MAP[brandCode] || (skuParts.brand || row.Brand || "");
 
       // Country from company mapping
-      const countryCode = getCountryFromCompany(customer) || "nzl";
+      const countryCode = getCountryFromCompany(customer);
 
       // Convert cases into 12pk units using case size
       const caseSizeVal = caseSizeCol ? row[caseSizeCol] : null;
