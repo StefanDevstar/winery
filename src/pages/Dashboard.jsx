@@ -3994,36 +3994,12 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
         {/* KPI Tiles */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 md:gap-6">
           <KPITile
-            title="Avg Stock Float"
-            value={avgFloatNow}
-            previousValue={avgFloatPrev}
-            unit="cases"
-            trend={avgFloatNow > avgFloatPrev ? "up" : avgFloatNow < avgFloatPrev ? "down" : "neutral"}
-            status={avgFloatNow < 500 ? "warning" : "healthy"}
-          />
-          <KPITile
             title="Forecast Accuracy"
             value={forecastAccNow}
             previousValue={forecastAccPrev}
             unit="%"
             trend={forecastAccNow > forecastAccPrev ? "up" : forecastAccNow < forecastAccPrev ? "down" : "neutral"}
             status={forecastAccNow > 80 ? "healthy" : "warning"}
-          />
-          <KPITile
-            title="Months till Stock Out"
-            value={criticalNow}
-            previousValue={criticalPrev}
-            unit="alerts"
-            trend={criticalNow > criticalPrev ? "up" : criticalNow < criticalPrev ? "down" : "neutral"}
-            status={criticalNow > 0 ? "critical" : "healthy"}
-          />
-          <KPITile
-            title="Distributors at Risk"
-            value={atRiskNow}
-            previousValue={atRiskPrev}
-            unit="distributors"
-            trend={atRiskNow > atRiskPrev ? "up" : atRiskNow < atRiskPrev ? "down" : "neutral"}
-            status={atRiskNow > 2 ? "warning" : "healthy"}
           />
         </div>
 
