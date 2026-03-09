@@ -518,17 +518,24 @@ function getMinMaxDates(rows) {
   return { min, max };
 }
 
-  // Load raw data asynchronously from IndexedDB
+  // Load raw data asynchronously from shared storage
   const [rawData, setRawData] = useState(null);
   const [rawDataVersion, setRawDataVersion] = useState(0);
+  const [isRawDataLoading, setIsRawDataLoading] = useState(true);
+  const [isInitialDataReady, setIsInitialDataReady] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setIsRawDataLoading(true);
+    setIsInitialDataReady(false);
+
     async function load() {
+      let hasMonthlyData = false;
       try {
         const monthlyData = await loadAllMonthlyData();
         if (cancelled) return;
         if (monthlyData) {
+          hasMonthlyData = true;
           setRawData({
             exportsData: monthlyData.exports.length > 0 ? monthlyData.exports : null,
             warehouseStock: monthlyData.warehouse_stock.length > 0 ? monthlyData.warehouse_stock : null,
@@ -542,6 +549,12 @@ function getMinMaxDates(rows) {
         }
       } catch (err) {
         if (!cancelled) setRawData(null);
+      } finally {
+        if (!cancelled) {
+          setIsRawDataLoading(false);
+          // No uploaded data means we're done loading immediately.
+          if (!hasMonthlyData) setIsInitialDataReady(true);
+        }
       }
     }
     load();
@@ -3801,10 +3814,12 @@ if (DEBUG_WH_AUB && normalizeCountryCode(countryFilter).toLowerCase() === "au-b"
             atRiskNow,
             atRiskPrev,
           });
-          
-          setIsProcessing(false);
         } catch (err) {
+          console.error("[Dashboard] processing failed:", err);
+        } finally {
           setIsProcessing(false);
+          // Marks first successful/attempted processing pass as complete.
+          setIsInitialDataReady(true);
         }
       });
     };
@@ -3978,6 +3993,26 @@ const handleFilterChange = useCallback((typeOrObj, valueMaybe) => {
       total_12pk: Math.round(filteredMagnumCsTable.reduce((sum, r) => sum + (r.total_12pk || 0), 0) * 100) / 100,
     };
   }, [filteredMagnumCsTable]);
+
+  const showInitialLoader = isRawDataLoading || !isInitialDataReady;
+
+  if (showInitialLoader) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-white p-3 sm:p-4 md:p-6">
+        <div className="max-w-7xl mx-auto">
+          <div className="min-h-[70vh] flex items-center justify-center">
+            <div className="bg-white border border-slate-200 shadow-lg rounded-xl px-6 py-5 flex items-center gap-3">
+              <div className="animate-spin rounded-full h-5 w-5 border-2 border-slate-300 border-t-slate-700" />
+              <div>
+                <p className="text-sm font-semibold text-slate-800">Loading dashboard data...</p>
+                <p className="text-xs text-slate-500">Please wait while we load all uploaded records.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-white p-3 sm:p-4 md:p-6">
