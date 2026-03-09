@@ -1,8 +1,27 @@
-# Base44 App
+# Winery Tool
 
+This is a Vite + React app.
 
-This app was created automatically by Base44.
-It's a Vite+React app that communicates with the Base44 API.
+## Supabase Setup (Required)
+
+The app now uses Supabase as shared storage so uploaded data is available to all employees.
+
+1. In Supabase SQL Editor, run `supabase/setup.sql`.
+2. Create `.env` in the project root from `.env.example`.
+3. Set:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+4. Restart the dev server.
+5. In Supabase Dashboard -> Authentication -> Users, create a user account:
+   - Email: `archgardnerai@gmail.com`
+   - Password: `JTWgardtech`
+
+## App Login
+
+- The app now requires sign in before access to Dashboard and Upload Data.
+- Login form is prefilled with:
+  - `archgardnerai@gmail.com`
+  - `JTWgardtech`
 
 ## Running the app
 
@@ -16,5 +35,3 @@ npm run dev
 ```bash
 npm run build
 ```
-
-For more information and support, please contact Base44 support at app@base44.com.

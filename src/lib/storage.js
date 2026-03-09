@@ -1,55 +1,50 @@
-const DB_NAME = 'winery-tool';
-const STORE_NAME = 'data';
-const DB_VERSION = 1;
+import { getSupabaseClient } from "./supabaseClient";
 
-let _db = null;
+const STORAGE_TABLE = "app_kv";
 
-function openDB() {
-  if (_db) return Promise.resolve(_db);
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE_NAME);
-    req.onsuccess = () => { _db = req.result; resolve(_db); };
-    req.onerror = () => reject(req.error);
-  });
+function throwIfError(error, action) {
+  if (error) {
+    throw new Error(`Storage ${action} failed: ${error.message}`);
+  }
 }
 
 export async function idbGet(key) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const req = tx.objectStore(STORE_NAME).get(key);
-    req.onsuccess = () => resolve(req.result ?? null);
-    req.onerror = () => reject(req.error);
-  });
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from(STORAGE_TABLE)
+    .select("value")
+    .eq("key", key)
+    .maybeSingle();
+
+  throwIfError(error, `read for key "${key}"`);
+  return data?.value ?? null;
 }
 
 export async function idbSet(key, value) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put(value, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from(STORAGE_TABLE).upsert(
+    {
+      key,
+      value,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "key" }
+  );
+
+  throwIfError(error, `write for key "${key}"`);
 }
 
 export async function idbDelete(key) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from(STORAGE_TABLE).delete().eq("key", key);
+  throwIfError(error, `delete for key "${key}"`);
 }
 
 export async function idbClear() {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).clear();
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from(STORAGE_TABLE)
+    .delete()
+    .gte("key", "");
+  throwIfError(error, "clear");
 }

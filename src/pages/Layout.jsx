@@ -1,11 +1,23 @@
 
 import React from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { createPageUrl } from "@/utils";
-import { BarChart3, Upload } from "lucide-react";
+import { BarChart3, LogOut, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getSupabaseClient } from "@/lib/supabaseClient";
 
 export default function Layout({ children, currentPageName }) {
+  const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    try {
+      const supabase = getSupabaseClient();
+      await supabase.auth.signOut();
+    } finally {
+      navigate("/login");
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-white">
       <style>{`
@@ -60,6 +72,14 @@ export default function Layout({ children, currentPageName }) {
                   <span className="sm:hidden">Upload</span>
                 </Button>
               </Link>
+              <Button
+                variant="outline"
+                className="w-full sm:w-auto text-white border-white/20 bg-white/10 hover:bg-white/20 hover:text-white gap-2 text-sm"
+                onClick={handleLogout}
+              >
+                <LogOut className="w-4 h-4" />
+                Logout
+              </Button>
             </div>
           </div>
         </div>
