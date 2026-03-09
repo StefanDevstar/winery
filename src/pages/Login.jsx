@@ -6,8 +6,8 @@ import { Input } from "@/components/ui/input";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 
 export default function Login({ session, isCheckingSession }) {
-  const [email, setEmail] = useState("archgardnerai@gmail.com");
-  const [password, setPassword] = useState("JTWgardtech");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
